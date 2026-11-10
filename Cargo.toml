@@ -2,5 +2,69 @@
 name = "controldeck"
 version = "0.1.0"
 edition = "2024"
+description = "Lightweight web-based server management control panel"
+license = "AGPL-3.0-or-later"
 
 [dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+rust-embed = "8"
+mime_guess = "2"
+serde = { version = "1", features = ["derive"] }
+libc = "0.2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+serde_json = "1"
+
+[profile.release]
+lto = true
+strip = true
+
+# --- Packaging: `cargo deb --no-build` and `cargo generate-rpm` (see ci.yml) ---
+
+[package.metadata.deb]
+maintainer = "banshee-lab <noreply@github.com>"
+section = "admin"
+priority = "optional"
+depends = "$auto"
+extended-description = "ControlDeck serves a mobile-first dashboard with live and historical CPU, memory and disk metrics, and is managed through systemd (controldeck.service)."
+assets = [
+	["target/release/controldeck", "usr/bin/", "755"],
+	["packaging/controldeck.service", "usr/lib/systemd/system/controldeck.service", "644"],
+	["packaging/controldeck.env", "etc/controldeck/controldeck.env", "644"],
+	["LICENSE", "usr/share/doc/controldeck/LICENSE", "644"],
+]
+conf-files = ["/etc/controldeck/controldeck.env"]
+maintainer-scripts = "packaging/deb"
+
+[package.metadata.generate-rpm]
+assets = [
+	{ source = "target/release/controldeck", dest = "/usr/bin/controldeck", mode = "755" },
+	{ source = "packaging/controldeck.service", dest = "/usr/lib/systemd/system/controldeck.service", mode = "644" },
+	{ source = "packaging/controldeck.env", dest = "/etc/controldeck/controldeck.env", mode = "644", config = "noreplace" },
+	{ source = "LICENSE", dest = "/usr/share/doc/controldeck/LICENSE", mode = "644", doc = true },
+]
+post_install_script = '''
+if [ -d /run/systemd/system ]; then
+	systemctl daemon-reload || :
+	if [ "$1" -eq 1 ]; then
+		systemctl enable controldeck.service || :
+		systemctl start controldeck.service || :
+	else
+		systemctl try-restart controldeck.service || :
+	fi
+fi
+'''
+pre_uninstall_script = '''
+if [ "$1" -eq 0 ] && [ -d /run/systemd/system ]; then
+	systemctl disable --now controldeck.service || :
+fi
+'''
+post_uninstall_script = '''
+if [ -d /run/systemd/system ]; then
+	systemctl daemon-reload || :
+fi
+'''

@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
+	systemctl daemon-reload || true
+	if [ -z "$2" ]; then
+		# fresh install: register and start
+		systemctl enable controldeck.service || true
+		systemctl start controldeck.service || true
+	else
+		# upgrade: keep the admin's enable/disable choice, restart if running
+		systemctl try-restart controldeck.service || true
+	fi
+fi
+exit 0

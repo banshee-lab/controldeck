@@ -1,0 +1,28 @@
+[Unit]
+Description=ControlDeck server management control panel
+Documentation=https://github.com/banshee-lab/controldeck
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/controldeck
+# Defaults; override in /etc/controldeck/controldeck.env
+Environment=DECK_DB=/var/lib/controldeck/metrics.db
+EnvironmentFile=-/etc/controldeck/controldeck.env
+DynamicUser=yes
+StateDirectory=controldeck
+Restart=on-failure
+RestartSec=3
+
+# Hardening (kept compatible with reading /proc and statvfs on all mounts)
+NoNewPrivileges=yes
+ProtectSystem=strict
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -10,4 +10,12 @@
 	<link rel="icon" href={favicon} />
 </svelte:head>
 
-{@render children()}
+<div class="mx-auto flex min-h-screen max-w-7xl flex-col gap-4 p-4">
+	<header class="flex items-center justify-between">
+		<h1 class="h3">ControlDeck</h1>
+		<span class="badge preset-tonal-primary">live</span>
+	</header>
+	<main class="flex flex-col gap-4">
+		{@render children()}
+	</main>
+</div>

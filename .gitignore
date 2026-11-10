@@ -18,3 +18,7 @@ Thumbs.db
 
 # Environment variables
 .env
+
+# Local SQLite metrics database
+/db/*.db
+/db/*.db-*
