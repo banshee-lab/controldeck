@@ -57,18 +57,28 @@ jobs:
           path: web/build
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+      - name: Set package version to match the release tag
+        run: sed -i '0,/^version = .*/s//version = "0.1.${{ github.run_number }}"/' Cargo.toml
       - run: cargo build --release
-      - name: Package binary
+      - name: Build deb and rpm packages
         run: |
-          cp target/release/controldeck controldeck-linux-x86_64
-          sha256sum controldeck-linux-x86_64 > controldeck-linux-x86_64.sha256
+          cargo deb --no-build
+          cargo generate-rpm
+      - name: Collect release assets
+        run: |
+          mkdir dist
+          cp target/release/controldeck dist/controldeck-linux-x86_64
+          cp target/debian/*.deb target/generate-rpm/*.rpm dist/
+          cd dist && sha256sum * > SHA256SUMS && ls -l
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="v0.1.${{ github.run_number }}"
-          gh release create "$TAG" \
-            controldeck-linux-x86_64 controldeck-linux-x86_64.sha256 \
+          gh release create "$TAG" dist/* \
             --target "$GITHUB_SHA" \
             --title "ControlDeck $TAG" \
             --generate-notes

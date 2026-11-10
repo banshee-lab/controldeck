@@ -28,6 +28,24 @@ make test    # cargo tests + svelte-check + vitest/playwright
 Download a prebuilt `controldeck-linux-x86_64` from the
 [Releases](../../releases) page (published on every push to `main`).
 
+## Install as a systemd service
+
+Each release also ships `.deb` and `.rpm` packages. They install the binary to
+`/usr/bin`, the unit to `controldeck.service`, a config file at
+`/etc/controldeck/controldeck.env`, and enable and start the service.
+
+```bash
+sudo apt install ./controldeck_*.deb        # Debian / Ubuntu
+sudo zypper install ./controldeck-*.rpm     # openSUSE (dnf install on Fedora/RHEL)
+
+systemctl status controldeck
+sudo systemctl restart controldeck          # after editing the env file
+journalctl -u controldeck -f
+```
+
+The service runs as a dynamic unprivileged user and stores metrics in
+`/var/lib/controldeck/metrics.db`.
+
 ## Configuration (environment variables)
 
 | Variable | Default | Description |
