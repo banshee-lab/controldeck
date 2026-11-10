@@ -11,7 +11,7 @@ one port. Linux-only (reads `/proc`, `/sys`).
 - `make build` — `yarn build` in `web/`, then `cargo build --release`
 - `make test` — `cargo test` + `yarn run check` + `yarn test`
 - `make run` — run the release binary
-- Frontend dev: `cd web && yarn dev` (proxies `/api` to :8080)
+- Frontend dev: `cd web && yarn dev` (proxies `/api` to :9999)
 - Use **Yarn 1** (never npm to install) in `web/`; commit `yarn.lock`. Run scripts as
   `yarn run check` (plain `yarn check` is a Yarn built-in). Do not edit the generated
   `web/.pnp.*` files.
