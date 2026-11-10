@@ -3,7 +3,7 @@ name = "controldeck"
 version = "0.1.0"
 edition = "2024"
 description = "Lightweight web-based server management control panel"
-license = "AGPL-3.0-only"
+license = "AGPL-3.0-or-later"
 
 [dependencies]
 axum = "0.8"

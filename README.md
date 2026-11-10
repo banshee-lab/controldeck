@@ -86,4 +86,4 @@ Run `cargo run` (backend, :8080) and `cd web && yarn dev` (Vite proxies
 
 ## License
 
-GNU Affero General Public License v3.0 only (AGPL-3.0-only). See [LICENSE](LICENSE).
+GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later). See [LICENSE](LICENSE).
