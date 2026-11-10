@@ -62,16 +62,35 @@ jobs:
           tool: cargo-deb,cargo-generate-rpm
       - name: Set package version to match the release tag
         run: sed -i '0,/^version = .*/s//version = "0.1.${{ github.run_number }}"/' Cargo.toml
-      - run: cargo build --release
+      - name: Vendor Rust dependencies for offline builds
+        run: |
+          mkdir -p .cargo
+          cargo vendor vendor > .cargo/config.toml
+      - run: cargo build --release --locked
       - name: Build deb and rpm packages
         run: |
           cargo deb --no-build
           cargo generate-rpm
       - name: Collect release assets
         run: |
-          mkdir dist
+          VERSION="0.1.${{ github.run_number }}"
+          mkdir -p dist
           cp target/release/controldeck dist/controldeck-linux-x86_64
           cp target/debian/*.deb target/generate-rpm/*.rpm dist/
+          tar --exclude-vcs --exclude=./target --exclude=./dist \
+            --exclude=./web/node_modules --exclude=./web/.svelte-kit \
+            --transform="s,^,controldeck-${VERSION}/," \
+            -czf "dist/controldeck-${VERSION}.tar.gz" .
+          tar --exclude-vcs --exclude=./target --exclude=./dist --exclude=./debian \
+            --exclude=./web/node_modules --exclude=./web/.svelte-kit \
+            --transform="s,^,controldeck-${VERSION}/," \
+            -czf "$RUNNER_TEMP/controldeck_${VERSION}.orig.tar.gz" .
+          mkdir -p "$RUNNER_TEMP/controldeck-${VERSION}"
+          tar -xzf "$RUNNER_TEMP/controldeck_${VERSION}.orig.tar.gz" -C "$RUNNER_TEMP"
+          cp -a debian "$RUNNER_TEMP/controldeck-${VERSION}/debian"
+          sed "1s/0.1.0-1/${VERSION}-1/; \$s#.*# -- Banshee Lab <noreply@github.com>  $(date -R)#" \
+            debian/changelog > "$RUNNER_TEMP/controldeck-${VERSION}/debian/changelog"
+          (cd "$RUNNER_TEMP" && dpkg-source -b "controldeck-${VERSION}")
           cd dist && sha256sum * > SHA256SUMS && ls -l
       - name: Publish GitHub release
         env:
@@ -82,3 +101,37 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "ControlDeck $TAG" \
             --generate-notes
+      - name: Submit source package to OBS
+        if: ${{ vars.OBS_PUBLISH == 'true' }}
+        env:
+          OBS_API_URL: ${{ vars.OBS_API_URL || 'https://api.opensuse.org' }}
+          OBS_PROJECT: ${{ vars.OBS_PROJECT || 'home:nomachine' }}
+          OBS_USER: ${{ secrets.OBS_USER }}
+          OBS_PASSWORD: ${{ secrets.OBS_PASSWORD }}
+          VERSION: 0.1.${{ github.run_number }}
+        run: |
+          test -n "$OBS_USER" && test -n "$OBS_PASSWORD"
+          pipx install osc
+          cat > "$HOME/.oscrc" <<EOF
+          [general]
+          apiurl = $OBS_API_URL
+          [$OBS_API_URL]
+          user = $OBS_USER
+          pass = $OBS_PASSWORD
+          EOF
+          chmod 600 "$HOME/.oscrc"
+          OBS_PACKAGE_DIR="$RUNNER_TEMP/obs-package"
+          osc --apiurl "$OBS_API_URL" checkout "$OBS_PROJECT" controldeck "$OBS_PACKAGE_DIR"
+          rm -f "$OBS_PACKAGE_DIR"/controldeck-*.tar.gz
+          rm -f "$OBS_PACKAGE_DIR"/controldeck_*.dsc \
+            "$OBS_PACKAGE_DIR"/controldeck_*.orig.tar.gz \
+            "$OBS_PACKAGE_DIR"/controldeck_*.debian.tar.*
+          cp "dist/controldeck-${VERSION}.tar.gz" "$OBS_PACKAGE_DIR/"
+          cp "$RUNNER_TEMP"/controldeck_*.dsc \
+            "$RUNNER_TEMP"/controldeck_*.orig.tar.gz \
+            "$RUNNER_TEMP"/controldeck_*.debian.tar.* "$OBS_PACKAGE_DIR/"
+          sed "s/^Version:.*/Version:        ${VERSION}/" \
+            packaging/rpm/controldeck.spec > "$OBS_PACKAGE_DIR/controldeck.spec"
+          cd "$OBS_PACKAGE_DIR"
+          osc addremove
+          osc commit -m "Release ${VERSION}"

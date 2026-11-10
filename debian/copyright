@@ -1,0 +1,12 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: ControlDeck
+Source: https://github.com/banshee-lab/controldeck
+
+Files: *
+Copyright: 2026 Banshee Lab
+License: AGPL-3+
+ This program is licensed under the GNU Affero General Public License,
+ version 3 or (at your option) any later version.
+ .
+ On Debian systems, the complete text of the GNU AGPL version 3 is in
+ /usr/share/common-licenses/AGPL-3.

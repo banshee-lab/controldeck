@@ -21,7 +21,7 @@ Requirements: Rust >= 1.85 (edition 2024), Node.js (see `web/.node-version`), Ya
 
 ```bash
 make build   # frontend (yarn) + release binary
-make run     # http://127.0.0.1:8080
+make run     # http://127.0.0.1:9999
 make test    # cargo tests + svelte-check + vitest/playwright
 ```
 
@@ -50,7 +50,7 @@ The service runs as a dynamic unprivileged user and stores metrics in
 
 | Variable | Default | Description |
 |---|---|---|
-| `DECK_ADDR` | `127.0.0.1:8080` | Listen address |
+| `DECK_ADDR` | `127.0.0.1:9999` | Listen address |
 | `DECK_DB` | `<binary dir>/db/metrics.db` | SQLite file |
 | `DECK_INTERVAL_SECS` | `5` | Sampling interval |
 
@@ -73,7 +73,7 @@ db/             default SQLite location in development
 
 ## Development
 
-Run `cargo run` (backend, :8080) and `cd web && yarn dev` (Vite proxies
+Run `cargo run` (backend, :9999) and `cd web && yarn dev` (Vite proxies
 `/api` to the backend). `build.rs` creates an empty `web/build` so
 `cargo test` works without building the frontend.
 

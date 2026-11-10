@@ -21,7 +21,7 @@ export default defineConfig({
 	],
 	server: {
 		// `yarn dev` talks to a locally running backend.
-		proxy: { '/api': 'http://127.0.0.1:8080' }
+		proxy: { '/api': 'http://127.0.0.1:9999' }
 	},
 	test: {
 		expect: { requireAssertions: true },
