@@ -1,14 +1,15 @@
 # openSUSE Build Service
 
-The GitHub release workflow can submit a source package to OBS. OBS then builds
-the RPM for the repositories enabled on the OBS project and publishes it
-according to that project's publishing configuration. GitHub continues to
-publish the existing binary, `.deb`, and `cargo-generate-rpm` `.rpm` assets.
+The GitHub release workflow can submit source packages to OBS. OBS builds RPM
+and Debian packages for the repositories enabled on the OBS project and
+publishes them according to that project's publishing configuration. GitHub
+continues to publish the existing binary, `.deb`, and `cargo-generate-rpm`
+`.rpm` assets.
 
-The source archive includes the Svelte build output and vendored Rust crates, so
-the OBS build can run offline. `packaging/rpm/controldeck.spec` is used for the
-OBS build; the RPM metadata in `Cargo.toml` remains in place for the existing
-GitHub release.
+The source archives include the Svelte build output and vendored Rust crates,
+so both OBS builds can run offline. `packaging/rpm/controldeck.spec` and
+`debian/` provide the OBS packaging metadata; the package metadata in
+`Cargo.toml` remains in place for the existing GitHub release.
 
 ## Setup
 

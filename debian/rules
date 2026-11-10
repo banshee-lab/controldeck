@@ -1,0 +1,12 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --release --locked --offline
+
+override_dh_auto_install:
+	install -Dpm0755 target/release/controldeck debian/controldeck/usr/bin/controldeck
+	install -Dpm0644 packaging/controldeck.service debian/controldeck/usr/lib/systemd/system/controldeck.service
+	install -Dpm0644 packaging/controldeck.env debian/controldeck/etc/controldeck/controldeck.env

@@ -81,6 +81,16 @@ jobs:
             --exclude=./web/node_modules --exclude=./web/.svelte-kit \
             --transform="s,^,controldeck-${VERSION}/," \
             -czf "dist/controldeck-${VERSION}.tar.gz" .
+          tar --exclude-vcs --exclude=./target --exclude=./dist --exclude=./debian \
+            --exclude=./web/node_modules --exclude=./web/.svelte-kit \
+            --transform="s,^,controldeck-${VERSION}/," \
+            -czf "$RUNNER_TEMP/controldeck_${VERSION}.orig.tar.gz" .
+          mkdir -p "$RUNNER_TEMP/controldeck-${VERSION}"
+          tar -xzf "$RUNNER_TEMP/controldeck_${VERSION}.orig.tar.gz" -C "$RUNNER_TEMP"
+          cp -a debian "$RUNNER_TEMP/controldeck-${VERSION}/debian"
+          sed "1s/0.1.0-1/${VERSION}-1/; \$s#.*# -- Banshee Lab <noreply@github.com>  $(date -R)#" \
+            debian/changelog > "$RUNNER_TEMP/controldeck-${VERSION}/debian/changelog"
+          (cd "$RUNNER_TEMP" && dpkg-source -b "controldeck-${VERSION}")
           cd dist && sha256sum * > SHA256SUMS && ls -l
       - name: Publish GitHub release
         env:
@@ -113,7 +123,13 @@ jobs:
           OBS_PACKAGE_DIR="$RUNNER_TEMP/obs-package"
           osc --apiurl "$OBS_API_URL" checkout "$OBS_PROJECT" controldeck "$OBS_PACKAGE_DIR"
           rm -f "$OBS_PACKAGE_DIR"/controldeck-*.tar.gz
+          rm -f "$OBS_PACKAGE_DIR"/controldeck_*.dsc \
+            "$OBS_PACKAGE_DIR"/controldeck_*.orig.tar.gz \
+            "$OBS_PACKAGE_DIR"/controldeck_*.debian.tar.*
           cp "dist/controldeck-${VERSION}.tar.gz" "$OBS_PACKAGE_DIR/"
+          cp "$RUNNER_TEMP"/controldeck_*.dsc \
+            "$RUNNER_TEMP"/controldeck_*.orig.tar.gz \
+            "$RUNNER_TEMP"/controldeck_*.debian.tar.* "$OBS_PACKAGE_DIR/"
           sed "s/^Version:.*/Version:        ${VERSION}/" \
             packaging/rpm/controldeck.spec > "$OBS_PACKAGE_DIR/controldeck.spec"
           cd "$OBS_PACKAGE_DIR"

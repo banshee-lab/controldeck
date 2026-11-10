@@ -1,0 +1,14 @@
+Source: controldeck
+Section: admin
+Priority: optional
+Maintainer: Banshee Lab <noreply@github.com>
+Build-Depends: cargo (>= 1.85), debhelper-compat (= 13), gcc, rustc (>= 1.85)
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+
+Package: controldeck
+Architecture: any
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: Lightweight web-based server management control panel
+ ControlDeck serves a dashboard with live and historical system metrics.
+ It is managed through systemd.
