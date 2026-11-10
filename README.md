@@ -50,9 +50,9 @@ The service runs as a dynamic unprivileged user and stores metrics in
 
 | Variable | Default | Description |
 |---|---|---|
-| `ADDR` | `127.0.0.1:8080` | Listen address |
-| `DB` | `<binary dir>/db/metrics.db` | SQLite file |
-| `INTERVAL_SECS` | `5` | Sampling interval |
+| `DECK_ADDR` | `127.0.0.1:8080` | Listen address |
+| `DECK_DB` | `<binary dir>/db/metrics.db` | SQLite file |
+| `DECK_INTERVAL_SECS` | `5` | Sampling interval |
 
 > **Security:** there is no authentication. It binds to localhost by default;
 > put it behind a reverse proxy with auth before exposing it.

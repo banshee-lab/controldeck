@@ -7,7 +7,7 @@ After=network.target
 Type=simple
 ExecStart=/usr/bin/controldeck
 # Defaults; override in /etc/controldeck/controldeck.env
-Environment=DB=/var/lib/controldeck/metrics.db
+Environment=DECK_DB=/var/lib/controldeck/metrics.db
 EnvironmentFile=-/etc/controldeck/controldeck.env
 DynamicUser=yes
 StateDirectory=controldeck

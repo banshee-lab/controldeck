@@ -139,11 +139,11 @@ async fn shutdown_signal() {
 
 #[tokio::main]
 async fn main() {
-    let db_path = std::env::var("DB")
+    let db_path = std::env::var("DECK_DB")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_db_path());
-    let addr = std::env::var("ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
-    let interval = env_u64("INTERVAL_SECS", 5).max(1);
+    let addr = std::env::var("DECK_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    let interval = env_u64("DECK_INTERVAL_SECS", 5).max(1);
 
     let conn = db::init(&db_path).unwrap_or_else(|e| panic!("cannot open {}: {e}", db_path.display()));
     let _ = db::cleanup(&conn, now_secs());
