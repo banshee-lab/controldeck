@@ -50,7 +50,7 @@ one port. Linux-only (reads `/proc`, `/sys`).
 ## Packaging
 - `packaging/` holds `controldeck.service`, `controldeck.env` and deb maintainer scripts.
   deb/rpm metadata lives in `Cargo.toml` (`[package.metadata.deb]`, `[package.metadata.generate-rpm]`).
-- The service uses `DynamicUser` + `StateDirectory`; the DB path is set via `CONTROLDECK_DB`.
+- The service uses `DynamicUser` + `StateDirectory`; the DB path is set via `DB`.
 - Keep sandboxing compatible with metrics collection (e.g. no `ProtectHome`, which would
   distort disk stats; no `ProtectProc`, which would hide processes).
 
