@@ -3,7 +3,7 @@ name = "controldeck"
 version = "0.1.0"
 edition = "2024"
 description = "Lightweight web-based server management control panel"
-license = "LicenseRef-Unspecified"
+license = "AGPL-3.0-only"
 
 [dependencies]
 axum = "0.8"
@@ -35,6 +35,7 @@ assets = [
 	["target/release/controldeck", "usr/bin/", "755"],
 	["packaging/controldeck.service", "usr/lib/systemd/system/controldeck.service", "644"],
 	["packaging/controldeck.env", "etc/controldeck/controldeck.env", "644"],
+	["LICENSE", "usr/share/doc/controldeck/LICENSE", "644"],
 ]
 conf-files = ["/etc/controldeck/controldeck.env"]
 maintainer-scripts = "packaging/deb"
@@ -44,6 +45,7 @@ assets = [
 	{ source = "target/release/controldeck", dest = "/usr/bin/controldeck", mode = "755" },
 	{ source = "packaging/controldeck.service", dest = "/usr/lib/systemd/system/controldeck.service", mode = "644" },
 	{ source = "packaging/controldeck.env", dest = "/etc/controldeck/controldeck.env", mode = "644", config = "noreplace" },
+	{ source = "LICENSE", dest = "/usr/share/doc/controldeck/LICENSE", mode = "644", doc = true },
 ]
 post_install_script = '''
 if [ -d /run/systemd/system ]; then

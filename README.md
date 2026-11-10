@@ -83,3 +83,7 @@ Run `cargo run` (backend, :8080) and `cd web && yarn dev` (Vite proxies
   Linux x86_64 binary and publishes a GitHub release tagged `v0.1.<run_number>`.
 - **PR Checks** (pull requests): tests both sides and builds the binary
   without publishing.
+
+## License
+
+GNU Affero General Public License v3.0 only (AGPL-3.0-only). See [LICENSE](LICENSE).
