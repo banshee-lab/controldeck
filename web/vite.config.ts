@@ -1,7 +1,7 @@
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vitest/config';
 import { playwright } from '@vitest/browser-playwright';
-import adapter from '@sveltejs/adapter-auto';
+import adapter from '@sveltejs/adapter-static';
 import { sveltekit } from '@sveltejs/kit/vite';
 
 export default defineConfig({
@@ -14,12 +14,15 @@ export default defineConfig({
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
 
-			// adapter-auto only supports some environments, see https://svelte.dev/docs/kit/adapter-auto for a list.
-			// If your environment is not supported, or you settled on a specific environment, switch out the adapter.
-			// See https://svelte.dev/docs/kit/adapters for more information about adapters.
-			adapter: adapter()
+			// Static SPA export; the Rust binary embeds web/build via rust-embed and serves
+			// index.html as the fallback for client-side routes.
+			adapter: adapter({ pages: 'build', assets: 'build', fallback: 'index.html', strict: false })
 		})
 	],
+	server: {
+		// `yarn dev` talks to a locally running backend.
+		proxy: { '/api': 'http://127.0.0.1:8080' }
+	},
 	test: {
 		expect: { requireAssertions: true },
 		projects: [

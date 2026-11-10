@@ -1,0 +1,54 @@
+name: PR Checks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.node-version
+          cache: yarn
+          cache-dependency-path: web/yarn.lock
+      - run: yarn install --frozen-lockfile
+      # `yarn run` because plain `yarn check` is a built-in Yarn 1 command
+      - run: yarn run check
+      - run: yarn playwright install --with-deps chromium
+      - run: yarn test   # vitest (server + browser) and playwright e2e
+      - run: yarn build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: web/build
+          if-no-files-found: error
+
+  test-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: mkdir -p web/build
+      - run: cargo test
+
+  build-binary:
+    needs: [test-frontend, test-backend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-build
+          path: web/build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release   # build only, nothing is published
