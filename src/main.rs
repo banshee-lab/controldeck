@@ -80,7 +80,7 @@ fn asset_response(path: &str, file: rust_embed::EmbeddedFile) -> Response {
     };
     (
         [
-            (header::CONTENT_TYPE, file.metadata.mimetype().to_string()),
+            (header::CONTENT_TYPE, mime_guess::from_path(path).first_or_octet_stream().to_string()),
             (header::CACHE_CONTROL, cache.to_string()),
         ],
         file.data.into_owned(),
