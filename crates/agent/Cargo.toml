@@ -1,0 +1,24 @@
+[package]
+name = "controldeck-agent"
+version = "0.1.0"
+edition = "2024"
+description = "Privileged ControlDeck agent: runs as root, serves plugins over a local Unix socket"
+license = "AGPL-3.0-or-later"
+
+[features]
+default = ["packages"]
+# One feature per compiled-in plugin. Add new plugins here.
+packages = ["dep:controldeck-pkgmgr"]
+
+[dependencies]
+controldeck-agent-sdk = { workspace = true }
+controldeck-pkgmgr = { workspace = true, optional = true }
+libc = { workspace = true }
+tokio = { workspace = true }
+
+[[bin]]
+name = "controldeck-agent"
+path = "src/main.rs"
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -1,13 +1,14 @@
-//! Command execution for the package manager layer.
+//! Command execution for plugins.
 //!
 //! Commands are described by [`Cmd`] (never a shell string, so there is no
 //! quoting/injection surface) and executed through the [`Runner`] trait, which
-//! lets the parsers and implementations be unit-tested with a fake runner.
+//! lets plugins be unit-tested with a fake runner. The agent runs as root, so
+//! every command runs with the agent's privileges: there is no `sudo`.
 
-use super::PkgError;
-use serde::Serialize;
 use async_trait::async_trait;
+use serde::Serialize;
 use std::{
+    fmt,
     process::Stdio,
     time::{Duration, Instant},
 };
@@ -20,13 +21,31 @@ use tokio::{
 const MAX_OUTPUT: usize = 1024 * 1024;
 const PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
+/// Failure to run a command at all (as opposed to the command failing).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecError {
+    /// The executable is not installed.
+    ToolMissing(String),
+    /// The command could not be spawned or awaited.
+    Exec(String),
+}
+
+impl fmt::Display for ExecError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExecError::ToolMissing(t) => write!(f, "required command not found: {t}"),
+            ExecError::Exec(m) => f.write_str(m),
+        }
+    }
+}
+
+impl std::error::Error for ExecError {}
+
 /// A command to run: program, arguments and execution policy.
 #[derive(Debug, Clone)]
 pub struct Cmd {
     pub program: &'static str,
     pub args: Vec<String>,
-    /// Needs root: run directly when already root, otherwise via `sudo -n`.
-    pub privileged: bool,
     pub timeout: Duration,
     /// Exit codes treated as success (e.g. `dnf check-update` returns 100).
     pub ok_codes: Vec<i32>,
@@ -38,7 +57,6 @@ impl Cmd {
         Self {
             program,
             args: args.iter().map(|s| s.to_string()).collect(),
-            privileged: false,
             timeout: Duration::from_secs(120),
             ok_codes: vec![0],
             env: Vec::new(),
@@ -47,11 +65,6 @@ impl Cmd {
 
     pub fn with_args<I: IntoIterator<Item = String>>(mut self, extra: I) -> Self {
         self.args.extend(extra);
-        self
-    }
-
-    pub fn privileged(mut self) -> Self {
-        self.privileged = true;
         self
     }
 
@@ -91,7 +104,6 @@ pub struct CmdOutput {
 }
 
 impl CmdOutput {
-    #[cfg(test)]
     pub fn ok(stdout: &str) -> Self {
         Self { success: true, exit_code: Some(0), stdout: stdout.to_string(), ..Default::default() }
     }
@@ -121,9 +133,9 @@ impl OutputSink for NoSink {
 #[async_trait]
 pub trait Runner: Send + Sync {
     /// Runs `cmd`, forwarding output lines to `sink` as they are produced.
-    async fn run_streaming(&self, cmd: &Cmd, sink: &dyn OutputSink) -> Result<CmdOutput, PkgError>;
+    async fn run_streaming(&self, cmd: &Cmd, sink: &dyn OutputSink) -> Result<CmdOutput, ExecError>;
 
-    async fn run(&self, cmd: &Cmd) -> Result<CmdOutput, PkgError> {
+    async fn run(&self, cmd: &Cmd) -> Result<CmdOutput, ExecError> {
         self.run_streaming(cmd, &NoSink).await
     }
 
@@ -131,34 +143,18 @@ pub trait Runner: Send + Sync {
     fn note(&self, _text: &str) {}
 }
 
-fn is_root() -> bool {
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    unsafe { libc::geteuid() == 0 }
-}
-
+/// Clean, fixed environment: nothing from the agent's own environment (which
+/// may carry configuration) leaks into spawned commands.
 fn envs(cmd: &Cmd) -> Vec<(String, String)> {
     let mut v = vec![
         ("LC_ALL".to_string(), "C".to_string()),
         ("LANG".to_string(), "C".to_string()),
         ("PATH".to_string(), PATH.to_string()),
+        ("HOME".to_string(), "/root".to_string()),
+        ("TERM".to_string(), "dumb".to_string()),
     ];
     v.extend(cmd.env.iter().map(|(k, val)| (k.to_string(), val.to_string())));
     v
-}
-
-/// Final program + argv. Privileged commands run through `sudo -n` (never
-/// prompting) unless already root; `sudo` resets the environment, so the
-/// variables are re-applied with `env`.
-pub fn build_argv(cmd: &Cmd, root: bool) -> (String, Vec<String>) {
-    if cmd.privileged && !root {
-        let mut args: Vec<String> = vec!["-n".into(), "--".into(), "env".into()];
-        args.extend(envs(cmd).into_iter().map(|(k, v)| format!("{k}={v}")));
-        args.push(cmd.program.to_string());
-        args.extend(cmd.args.iter().cloned());
-        ("sudo".to_string(), args)
-    } else {
-        (cmd.program.to_string(), cmd.args.clone())
-    }
 }
 
 /// Runs commands on the local system.
@@ -189,10 +185,11 @@ async fn pump<R: AsyncRead + Unpin>(r: R, stream: LineStream, sink: &dyn OutputS
 
 #[async_trait]
 impl Runner for SystemRunner {
-    async fn run_streaming(&self, cmd: &Cmd, sink: &dyn OutputSink) -> Result<CmdOutput, PkgError> {
-        let (program, args) = build_argv(cmd, is_root());
-        let mut c = Command::new(&program);
-        c.args(&args)
+    async fn run_streaming(&self, cmd: &Cmd, sink: &dyn OutputSink) -> Result<CmdOutput, ExecError> {
+        let program = cmd.program;
+        let mut c = Command::new(program);
+        c.args(&cmd.args)
+            .env_clear()
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -205,9 +202,9 @@ impl Runner for SystemRunner {
         let start = Instant::now();
         let mut child = c.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                PkgError::ToolMissing(program.clone())
+                ExecError::ToolMissing(program.to_string())
             } else {
-                PkgError::Exec(format!("cannot run {program}: {e}"))
+                ExecError::Exec(format!("cannot run {program}: {e}"))
             }
         })?;
         sink.line(LineStream::Command, &cmd.display_string());
@@ -239,7 +236,7 @@ impl Runner for SystemRunner {
                     duration_ms,
                 })
             }
-            Ok(Err(e)) => Err(PkgError::Exec(format!("wait failed: {e}"))),
+            Ok(Err(e)) => Err(ExecError::Exec(format!("wait failed: {e}"))),
             Err(_) => {
                 // Kill the whole process group (e.g. sudo -> apt), then the child.
                 if let Some(pid) = pid {
@@ -256,7 +253,7 @@ impl Runner for SystemRunner {
 
 /// Scripted runner for unit tests: responses are matched on the exact
 /// `program arg arg…` string and every executed command is recorded.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 pub mod fake {
     use super::*;
     use std::{collections::HashMap, sync::Mutex};
@@ -294,7 +291,7 @@ pub mod fake {
 
     #[async_trait]
     impl Runner for FakeRunner {
-        async fn run_streaming(&self, cmd: &Cmd, sink: &dyn OutputSink) -> Result<CmdOutput, PkgError> {
+        async fn run_streaming(&self, cmd: &Cmd, sink: &dyn OutputSink) -> Result<CmdOutput, ExecError> {
             self.calls.lock().unwrap().push(cmd.clone());
             sink.line(LineStream::Command, &cmd.display_string());
             match self.responses.get(&cmd.display_string()) {
@@ -303,8 +300,8 @@ pub mod fake {
                     o.stderr.lines().for_each(|l| sink.line(LineStream::Stderr, l));
                     Ok(o.clone())
                 }
-                Some(Err(_)) => Err(PkgError::ToolMissing(cmd.program.to_string())),
-                None => Err(PkgError::Exec(format!("unexpected command: {}", cmd.display_string()))),
+                Some(Err(_)) => Err(ExecError::ToolMissing(cmd.program.to_string())),
+                None => Err(ExecError::Exec(format!("unexpected command: {}", cmd.display_string()))),
             }
         }
     }
@@ -313,31 +310,6 @@ pub mod fake {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn privileged_as_root_runs_directly() {
-        let c = Cmd::new("apt-get", &["update"]).privileged();
-        let (p, a) = build_argv(&c, true);
-        assert_eq!(p, "apt-get");
-        assert_eq!(a, vec!["update"]);
-    }
-
-    #[test]
-    fn privileged_non_root_uses_sudo_with_env() {
-        let c = Cmd::new("apt-get", &["update"]).privileged().env("DEBIAN_FRONTEND", "noninteractive");
-        let (p, a) = build_argv(&c, false);
-        assert_eq!(p, "sudo");
-        assert_eq!(&a[..3], ["-n", "--", "env"]);
-        assert!(a.contains(&"DEBIAN_FRONTEND=noninteractive".to_string()));
-        assert!(a.contains(&"LC_ALL=C".to_string()));
-        assert_eq!(&a[a.len() - 2..], ["apt-get", "update"]);
-    }
-
-    #[test]
-    fn unprivileged_never_uses_sudo() {
-        let c = Cmd::new("apt", &["list"]);
-        assert_eq!(build_argv(&c, false).0, "apt");
-    }
 
     #[tokio::test]
     async fn system_runner_captures_output_and_codes() {
@@ -361,7 +333,7 @@ mod tests {
     #[tokio::test]
     async fn missing_binary_is_tool_missing() {
         let e = SystemRunner.run(&Cmd::new("definitely-not-a-real-binary", &[])).await.unwrap_err();
-        assert!(matches!(e, PkgError::ToolMissing(_)));
+        assert!(matches!(e, ExecError::ToolMissing(_)));
     }
 
     #[derive(Default)]

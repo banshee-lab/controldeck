@@ -10,5 +10,6 @@ Package: controldeck
 Architecture: any
 Depends: ${misc:Depends}, ${shlibs:Depends}
 Description: Lightweight web-based server management control panel
- ControlDeck serves a dashboard with live and historical system metrics.
- It is managed through systemd.
+ ControlDeck serves a dashboard with live and historical system metrics and
+ package management. It ships two systemd services: controldeck (web,
+ unprivileged) and controldeck-agent (root, reachable only by the web service).

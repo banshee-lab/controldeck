@@ -1,0 +1,19 @@
+[package]
+name = "controldeck-agent-sdk"
+version = "0.1.0"
+edition = "2024"
+description = "Plugin API and Unix-socket server for the privileged ControlDeck agent"
+license = "AGPL-3.0-or-later"
+
+[features]
+# Exposes `exec::fake::FakeRunner` to other crates' tests.
+test-util = []
+
+[dependencies]
+async-trait = { workspace = true }
+controldeck-proto = { workspace = true }
+futures-util = { workspace = true }
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }

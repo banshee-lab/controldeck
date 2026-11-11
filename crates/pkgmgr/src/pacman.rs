@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use super::{
-    Cmd, CmdOutput, PackageManager, PkgError, Runner, SearchResult, SecuritySupport, Update,
+    Cmd, CmdOutput, run, PackageManager, PkgError, Runner, SearchResult, SecuritySupport, Update,
     require_ok,
 };
 use std::collections::HashMap;
@@ -73,15 +73,15 @@ impl PackageManager for Pacman {
     }
 
     async fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("pacman", &["-Sy"]).privileged().timeout_secs(300)).await
+        run(r, &Cmd::new("pacman", &["-Sy"]).timeout_secs(300)).await
     }
 
     async fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError> {
         // Exit 1 means "no updates".
-        let out = require_ok(r.run(&Cmd::new("pacman", &["-Qu"]).ok_codes(&[0, 1])).await?, "pacman -Qu")?;
+        let out = require_ok(run(r, &Cmd::new("pacman", &["-Qu"]).ok_codes(&[0, 1])).await?, "pacman -Qu")?;
         let mut updates = parse_qu(&out.stdout);
         // Optional: arch-audit (exit 1 when vulnerable packages exist).
-        match r.run(&Cmd::new("arch-audit", &["-u"]).ok_codes(&[0, 1]).timeout_secs(120)).await {
+        match run(r, &Cmd::new("arch-audit", &["-u"]).ok_codes(&[0, 1]).timeout_secs(120)).await {
             Ok(a) if a.success => {
                 let vuln = parse_arch_audit(&a.stdout);
                 for u in &mut updates {
@@ -103,28 +103,28 @@ impl PackageManager for Pacman {
                 "Arch does not support partial upgrades; only a full system upgrade is allowed".into(),
             ));
         }
-        r.run(&Cmd::new("pacman", &["-Su", "--noconfirm"]).privileged().timeout_secs(1800)).await
+        run(r, &Cmd::new("pacman", &["-Su", "--noconfirm"]).timeout_secs(1800)).await
     }
 
     async fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError> {
         // Exit 1 means "no match".
-        let out = require_ok(r.run(&Cmd::new("pacman", &["-Ss", query]).ok_codes(&[0, 1])).await?, "pacman -Ss")?;
+        let out = require_ok(run(r, &Cmd::new("pacman", &["-Ss", query]).ok_codes(&[0, 1])).await?, "pacman -Ss")?;
         Ok(parse_search(&out.stdout))
     }
 
     async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("pacman", &["-S", "--noconfirm", "--needed"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
+        run(r, &Cmd::new("pacman", &["-S", "--noconfirm", "--needed"]).with_args(packages.to_vec()).timeout_secs(1800)).await
     }
 
     async fn remove(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("pacman", &["-Rs", "--noconfirm"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
+        run(r, &Cmd::new("pacman", &["-Rs", "--noconfirm"]).with_args(packages.to_vec()).timeout_secs(1800)).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pkgmgr::exec::fake::FakeRunner;
+    use controldeck_agent_sdk::exec::fake::FakeRunner;
 
     const AUDIT: &str = "Package openssl is affected by CVE-2024-1, CVE-2024-2. High risk!\nPackage zlib is affected by CVE-2024-3. Low risk!\n";
 
@@ -181,6 +181,5 @@ mod tests {
     async fn remove_command() {
         let r = FakeRunner::new().on("pacman -Rs --noconfirm git", "");
         assert!(Pacman.remove(&r, &["git".into()]).await.unwrap().success);
-        assert!(r.calls.lock().unwrap()[0].privileged);
     }
 }

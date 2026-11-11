@@ -38,7 +38,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: mkdir -p web/build
-      - run: cargo test
+      - run: cargo test --workspace
 
   build-binary:
     needs: [test-frontend, test-backend]
@@ -51,4 +51,4 @@ jobs:
           path: web/build
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release   # build only, nothing is published
+      - run: cargo build --release --workspace   # build only, nothing is published

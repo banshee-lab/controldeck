@@ -20,23 +20,27 @@ On an unsupported distro every operation returns `501`.
 > **There is no authentication.** Anyone who can reach the API can install software.
 > Keep the localhost bind or put an authenticating reverse proxy in front.
 
-- Read operations (`updates`, `search`, `info`) run unprivileged.
-- Mutating operations (`refresh`, installs) need root. If ControlDeck is not root, they run
-  through `sudo -n` (never prompts), so a sudoers rule is required. The packaged systemd unit
-  uses `DynamicUser`, which **cannot** use sudo: run the service as root, or override the unit
-  and grant a narrow sudoers rule, for the commands you want to allow.
+- The HTTP API is served by the unprivileged `controldeck` process, which only forwards
+  to the `packages` plugin of `controldeck-agent` (root) over a Unix socket that only the
+  `controldeck` user can use; see [architecture.md](architecture.md). Every operation
+  (including read-only ones) runs in the agent; the web process never executes package
+  commands. If the agent is down, these endpoints return `503`.
+- Package settings belong to the agent: `DECK_PKG_MANAGER` and `DECK_PKG_READONLY` go in
+  `/etc/controldeck/agent.env`, then `systemctl restart controldeck-agent`.
 - `DECK_PKG_READONLY=1` disables every mutating endpoint (`403`).
 - Package names are restricted to `[A-Za-z0-9+._:@/=~-]`, ≤128 chars, never starting with `-`
-  (max 100 per request). Commands are executed directly, never through a shell.
+  (max 100 per request), and are validated again in the agent. Commands are executed
+  directly, never through a shell, with a fixed environment.
 - Job output may contain anything the package manager prints (including package scripts' output); treat it as untrusted text and render it as text, never as HTML.
-- One mutating operation (job) runs at a time (`409` otherwise).
+- One mutating operation (job) runs at a time (`409` otherwise). Jobs live in the agent,
+  so they keep running, and their output stays replayable, if the web service restarts.
 - Operations time out (refresh 5 min, installs 30 min, Gentoo 2 h); returned output is capped at 1 MiB per stream.
 
 ## Conventions
 
 - JSON in/out. Errors: `{"error": "message"}` (plus `running_job` on `409`).
 - Status codes: `400` invalid input · `403` read-only mode · `404` unknown job ·
-  `409` another operation is running · `500` a read command failed · `501` unsupported distro.
+  `409` another operation is running · `500` a read command failed · `501` unsupported distro · `503` privileged agent unavailable.
 - Updates reflect the current cache. Call `refresh` first for fresh data.
 - Read operations (`info`, `updates`, `search`) answer directly. **Mutating operations
   (`refresh`, `install`, `remove`, `updates/install`) are background jobs**: they return `202`

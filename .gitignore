@@ -22,3 +22,6 @@ Thumbs.db
 # Local SQLite metrics database
 /db/*.db
 /db/*.db-*
+
+# Development agent socket
+/run/

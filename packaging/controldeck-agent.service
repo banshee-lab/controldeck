@@ -1,0 +1,26 @@
+[Unit]
+Description=ControlDeck privileged agent (root; reachable only by the controldeck user)
+Documentation=https://github.com/banshee-lab/controldeck
+After=local-fs.target
+Before=controldeck.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/controldeck-agent
+EnvironmentFile=-/etc/controldeck/agent.env
+# /run/controldeck/agent.sock is created by the agent itself as root:controldeck 0660.
+RuntimeDirectory=controldeck
+RuntimeDirectoryMode=0755
+Restart=on-failure
+RestartSec=3
+# Operations started by plugins (e.g. a package upgrade, possibly of ControlDeck
+# itself) must survive a restart of the agent: only stop the main process.
+KillMode=process
+
+# Deliberately *not* sandboxed further (no NoNewPrivileges, ProtectSystem, ...):
+# package managers and their maintainer scripts need the whole system, and
+# NoNewPrivileges breaks SELinux/AppArmor transitions. The security boundary is
+# the socket (see docs/architecture.md).
+
+[Install]
+WantedBy=multi-user.target

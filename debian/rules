@@ -4,9 +4,12 @@
 	dh $@
 
 override_dh_auto_build:
-	cargo build --release --locked --offline
+	cargo build --release --locked --offline --workspace
 
 override_dh_auto_install:
 	install -Dpm0755 target/release/controldeck debian/controldeck/usr/bin/controldeck
+	install -Dpm0755 target/release/controldeck-agent debian/controldeck/usr/bin/controldeck-agent
+	install -Dpm0644 packaging/controldeck-agent.service debian/controldeck/usr/lib/systemd/system/controldeck-agent.service
+	install -Dpm0600 packaging/agent.env debian/controldeck/etc/controldeck/agent.env
 	install -Dpm0644 packaging/controldeck.service debian/controldeck/usr/lib/systemd/system/controldeck.service
 	install -Dpm0644 packaging/controldeck.env debian/controldeck/etc/controldeck/controldeck.env

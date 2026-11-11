@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use super::{
-    Cmd, CmdOutput, PackageManager, PkgError, Runner, SearchResult, SecuritySupport, Update,
+    Cmd, CmdOutput, run, PackageManager, PkgError, Runner, SearchResult, SecuritySupport, Update,
     require_ok,
 };
 use std::collections::HashSet;
@@ -87,14 +87,14 @@ impl PackageManager for Zypper {
     }
 
     async fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError> {
-        r.run(&zypper(&["refresh"]).privileged().timeout_secs(300)).await
+        run(r, &zypper(&["refresh"]).timeout_secs(300)).await
     }
 
     async fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError> {
-        let out = require_ok(r.run(&Cmd::new("zypper", &["--xmlout", "--non-interactive", "list-updates"]).timeout_secs(300)).await?, "zypper list-updates")?;
+        let out = require_ok(run(r, &Cmd::new("zypper", &["--xmlout", "--non-interactive", "list-updates"]).timeout_secs(300)).await?, "zypper list-updates")?;
         let mut updates = parse_list_updates(&out.stdout)?;
         let sec = require_ok(
-            r.run(&Cmd::new("zypper", &["--xmlout", "--non-interactive", "list-patches", "--category", "security"]).timeout_secs(300)).await?,
+            run(r, &Cmd::new("zypper", &["--xmlout", "--non-interactive", "list-patches", "--category", "security"]).timeout_secs(300)).await?,
             "zypper list-patches",
         )?;
         updates.extend(parse_security_patches(&sec.stdout)?);
@@ -110,27 +110,27 @@ impl PackageManager for Zypper {
         } else {
             zypper(&["update", "--auto-agree-with-licenses"]).with_args(packages.to_vec())
         };
-        r.run(&cmd.privileged().timeout_secs(1800)).await
+        run(r, &cmd.timeout_secs(1800)).await
     }
 
     async fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError> {
-        let out = require_ok(r.run(&Cmd::new("zypper", &["--xmlout", "--non-interactive", "search", query]).timeout_secs(300)).await?, "zypper search")?;
+        let out = require_ok(run(r, &Cmd::new("zypper", &["--xmlout", "--non-interactive", "search", query]).timeout_secs(300)).await?, "zypper search")?;
         parse_search(&out.stdout)
     }
 
     async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
-        r.run(&zypper(&["install", "--auto-agree-with-licenses"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
+        run(r, &zypper(&["install", "--auto-agree-with-licenses"]).with_args(packages.to_vec()).timeout_secs(1800)).await
     }
 
     async fn remove(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
-        r.run(&zypper(&["remove"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
+        run(r, &zypper(&["remove"]).with_args(packages.to_vec()).timeout_secs(1800)).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pkgmgr::exec::fake::FakeRunner;
+    use controldeck_agent_sdk::exec::fake::FakeRunner;
 
     const LU: &str = r#"<?xml version='1.0'?>
 <stream><update-status version="0.6"><update-list>
@@ -211,6 +211,5 @@ mod tests {
     async fn remove_command() {
         let r = FakeRunner::new().on("zypper --non-interactive remove git", "");
         assert!(Zypper.remove(&r, &["git".into()]).await.unwrap().success);
-        assert!(r.calls.lock().unwrap()[0].privileged);
     }
 }

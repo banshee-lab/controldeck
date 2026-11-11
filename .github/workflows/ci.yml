@@ -44,7 +44,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: mkdir -p web/build
-      - run: cargo test
+      - run: cargo test --workspace
 
   release:
     needs: [test-frontend, test-backend]
@@ -61,12 +61,12 @@ jobs:
         with:
           tool: cargo-deb,cargo-generate-rpm
       - name: Set package version to match the release tag
-        run: sed -i '0,/^version = .*/s//version = "0.1.${{ github.run_number }}"/' Cargo.toml
+        run: sed -i '0,/^version = .*/s//version = "0.1.${{ github.run_number }}"/' Cargo.toml crates/*/Cargo.toml
       - name: Vendor Rust dependencies for offline builds
         run: |
           mkdir -p .cargo
           cargo vendor vendor > .cargo/config.toml
-      - run: cargo build --release --locked
+      - run: cargo build --release --locked --workspace
       - name: Build deb and rpm packages
         run: |
           cargo deb --no-build
@@ -76,6 +76,7 @@ jobs:
           VERSION="0.1.${{ github.run_number }}"
           mkdir -p dist
           cp target/release/controldeck dist/controldeck-linux-x86_64
+          cp target/release/controldeck-agent dist/controldeck-agent-linux-x86_64
           cp target/debian/*.deb target/generate-rpm/*.rpm dist/
           tar --exclude-vcs --exclude=./target --exclude=./dist \
             --exclude=./web/node_modules --exclude=./web/.svelte-kit \
