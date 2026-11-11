@@ -140,6 +140,10 @@ impl PackageManager for Emerge {
     async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
         r.run(&Cmd::new("emerge", &["--noreplace", "--color", "n", "--nospinner"]).with_args(packages.to_vec()).privileged().timeout_secs(7200)).await
     }
+
+    async fn remove(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
+        r.run(&Cmd::new("emerge", &["--unmerge", "--color", "n", "--nospinner"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
+    }
 }
 
 #[cfg(test)]
@@ -208,5 +212,12 @@ mod tests {
         Emerge.install_updates(&r, &["app-editors/vim".into()], false).await.unwrap();
         Emerge.install(&r, &["app-editors/vim".into()]).await.unwrap();
         assert!(matches!(Emerge.install_updates(&r, &[], true).await, Err(PkgError::Unsupported(_))));
+    }
+
+    #[tokio::test]
+    async fn remove_command() {
+        let r = FakeRunner::new().on("emerge --unmerge --color n --nospinner git", "");
+        assert!(Emerge.remove(&r, &["git".into()]).await.unwrap().success);
+        assert!(r.calls.lock().unwrap()[0].privileged);
     }
 }

@@ -115,6 +115,10 @@ impl PackageManager for Pacman {
     async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
         r.run(&Cmd::new("pacman", &["-S", "--noconfirm", "--needed"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
     }
+
+    async fn remove(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
+        r.run(&Cmd::new("pacman", &["-Rs", "--noconfirm"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
+    }
 }
 
 #[cfg(test)]
@@ -171,5 +175,12 @@ mod tests {
         assert!(matches!(Pacman.install_updates(&r, &["vim".into()], false).await, Err(PkgError::Unsupported(_))));
         assert!(matches!(Pacman.install_updates(&r, &[], true).await, Err(PkgError::Unsupported(_))));
         assert!(Pacman.install_updates(&r, &[], false).await.unwrap().success);
+    }
+
+    #[tokio::test]
+    async fn remove_command() {
+        let r = FakeRunner::new().on("pacman -Rs --noconfirm git", "");
+        assert!(Pacman.remove(&r, &["git".into()]).await.unwrap().success);
+        assert!(r.calls.lock().unwrap()[0].privileged);
     }
 }

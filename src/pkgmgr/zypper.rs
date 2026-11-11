@@ -121,6 +121,10 @@ impl PackageManager for Zypper {
     async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
         r.run(&zypper(&["install", "--auto-agree-with-licenses"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
     }
+
+    async fn remove(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
+        r.run(&zypper(&["remove"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
+    }
 }
 
 #[cfg(test)]
@@ -201,5 +205,12 @@ mod tests {
         Zypper.install_updates(&r, &[], true).await.unwrap();
         Zypper.install(&r, &["git".into()]).await.unwrap();
         assert!(matches!(Zypper.install_updates(&r, &["bash".into()], true).await, Err(PkgError::Unsupported(_))));
+    }
+
+    #[tokio::test]
+    async fn remove_command() {
+        let r = FakeRunner::new().on("zypper --non-interactive remove git", "");
+        assert!(Zypper.remove(&r, &["git".into()]).await.unwrap().success);
+        assert!(r.calls.lock().unwrap()[0].privileged);
     }
 }

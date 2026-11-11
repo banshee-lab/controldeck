@@ -14,6 +14,7 @@ mod apt;
 mod dnf;
 mod emerge;
 pub mod exec;
+pub mod jobs;
 mod pacman;
 mod zypper;
 
@@ -113,6 +114,8 @@ pub trait PackageManager: Send + Sync {
     ) -> Result<CmdOutput, PkgError>;
     async fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError>;
     async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError>;
+    /// Remove installed packages.
+    async fn remove(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError>;
 }
 
 // ---------------------------------------------------------------------------

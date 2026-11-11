@@ -84,6 +84,10 @@ impl PackageManager for Apk {
     async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
         r.run(&Cmd::new("apk", &["add"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
     }
+
+    async fn remove(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
+        r.run(&Cmd::new("apk", &["del"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
+    }
 }
 
 #[cfg(test)]
@@ -123,5 +127,12 @@ mod tests {
         Apk.install(&r, &["git".into()]).await.unwrap();
         assert!(matches!(Apk.install_updates(&r, &[], true).await, Err(PkgError::Unsupported(_))));
         assert_eq!(Apk.security_support(), SecuritySupport::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn remove_command() {
+        let r = FakeRunner::new().on("apk del git", "");
+        assert!(Apk.remove(&r, &["git".into()]).await.unwrap().success);
+        assert!(r.calls.lock().unwrap()[0].privileged);
     }
 }

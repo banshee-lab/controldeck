@@ -11,7 +11,10 @@ use std::{
     process::Stdio,
     time::{Duration, Instant},
 };
-use tokio::process::Command;
+use tokio::{
+    io::{AsyncBufReadExt, AsyncRead, BufReader},
+    process::Command,
+};
 
 /// Maximum bytes of stdout / stderr returned per command.
 const MAX_OUTPUT: usize = 1024 * 1024;
@@ -68,8 +71,7 @@ impl Cmd {
     }
 
     /// Human-readable form, e.g. `apt-get install -y curl`.
-    #[cfg(test)]
-    pub fn display(&self) -> String {
+    pub fn display_string(&self) -> String {
         std::iter::once(self.program.to_string())
             .chain(self.args.iter().cloned())
             .collect::<Vec<_>>()
@@ -95,9 +97,38 @@ impl CmdOutput {
     }
 }
 
+/// Which stream an output line came from.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LineStream {
+    /// The command line being executed (emitted once per command).
+    Command,
+    Stdout,
+    Stderr,
+}
+
+/// Receives command output line by line while a command runs.
+pub trait OutputSink: Send + Sync {
+    fn line(&self, stream: LineStream, text: &str);
+}
+
+pub struct NoSink;
+
+impl OutputSink for NoSink {
+    fn line(&self, _stream: LineStream, _text: &str) {}
+}
+
 #[async_trait]
 pub trait Runner: Send + Sync {
-    async fn run(&self, cmd: &Cmd) -> Result<CmdOutput, PkgError>;
+    /// Runs `cmd`, forwarding output lines to `sink` as they are produced.
+    async fn run_streaming(&self, cmd: &Cmd, sink: &dyn OutputSink) -> Result<CmdOutput, PkgError>;
+
+    async fn run(&self, cmd: &Cmd) -> Result<CmdOutput, PkgError> {
+        self.run_streaming(cmd, &NoSink).await
+    }
+
+    /// Informational line from an operation that ran no command (shown in streamed output).
+    fn note(&self, _text: &str) {}
 }
 
 fn is_root() -> bool {
@@ -133,9 +164,32 @@ pub fn build_argv(cmd: &Cmd, root: bool) -> (String, Vec<String>) {
 /// Runs commands on the local system.
 pub struct SystemRunner;
 
+/// Reads `r` to the end, forwarding each line (carriage-return separated
+/// progress updates count as separate lines) and collecting a capped copy.
+async fn pump<R: AsyncRead + Unpin>(r: R, stream: LineStream, sink: &dyn OutputSink, collected: &mut String) {
+    let mut rd = BufReader::new(r);
+    let mut raw = Vec::new();
+    loop {
+        raw.clear();
+        match rd.read_until(b'\n', &mut raw).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                let text = String::from_utf8_lossy(&raw);
+                for part in text.split(['\n', '\r']).filter(|p| !p.is_empty()) {
+                    sink.line(stream, part);
+                    if collected.len() < MAX_OUTPUT {
+                        collected.push_str(part);
+                        collected.push('\n');
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl Runner for SystemRunner {
-    async fn run(&self, cmd: &Cmd) -> Result<CmdOutput, PkgError> {
+    async fn run_streaming(&self, cmd: &Cmd, sink: &dyn OutputSink) -> Result<CmdOutput, PkgError> {
         let (program, args) = build_argv(cmd, is_root());
         let mut c = Command::new(&program);
         c.args(&args)
@@ -149,49 +203,55 @@ impl Runner for SystemRunner {
         }
 
         let start = Instant::now();
-        let child = c.spawn().map_err(|e| {
+        let mut child = c.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 PkgError::ToolMissing(program.clone())
             } else {
                 PkgError::Exec(format!("cannot run {program}: {e}"))
             }
         })?;
+        sink.line(LineStream::Command, &cmd.display_string());
         let pid = child.id();
+        let stdout = child.stdout.take().expect("stdout piped");
+        let stderr = child.stderr.take().expect("stderr piped");
 
-        match tokio::time::timeout(cmd.timeout, child.wait_with_output()).await {
-            Ok(Ok(o)) => {
-                let exit_code = o.status.code();
+        let (mut out, mut err) = (String::new(), String::new());
+        let waited = tokio::time::timeout(cmd.timeout, async {
+            let (_, _, status) = tokio::join!(
+                pump(stdout, LineStream::Stdout, sink, &mut out),
+                pump(stderr, LineStream::Stderr, sink, &mut err),
+                child.wait()
+            );
+            status
+        })
+        .await;
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+        match waited {
+            Ok(Ok(status)) => {
+                let exit_code = status.code();
                 Ok(CmdOutput {
                     success: exit_code.is_some_and(|c| cmd.ok_codes.contains(&c)),
                     exit_code,
                     timed_out: false,
-                    stdout: lossy_capped(&o.stdout),
-                    stderr: lossy_capped(&o.stderr),
-                    duration_ms: start.elapsed().as_millis() as u64,
+                    stdout: out,
+                    stderr: err,
+                    duration_ms,
                 })
             }
             Ok(Err(e)) => Err(PkgError::Exec(format!("wait failed: {e}"))),
             Err(_) => {
-                // The future (and the child) is dropped; kill_on_drop kills the
-                // child, also take down its process group (e.g. sudo -> apt).
+                // Kill the whole process group (e.g. sudo -> apt), then the child.
                 if let Some(pid) = pid {
                     // SAFETY: plain syscall on the process group of our own child.
                     unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
                 }
-                Ok(CmdOutput {
-                    success: false,
-                    exit_code: None,
-                    timed_out: true,
-                    duration_ms: start.elapsed().as_millis() as u64,
-                    ..Default::default()
-                })
+                let _ = child.start_kill();
+                sink.line(LineStream::Stderr, "timed out; command killed");
+                Ok(CmdOutput { success: false, exit_code: None, timed_out: true, stdout: out, stderr: err, duration_ms })
             }
         }
     }
-}
-
-fn lossy_capped(b: &[u8]) -> String {
-    String::from_utf8_lossy(&b[..b.len().min(MAX_OUTPUT)]).into_owned()
 }
 
 /// Scripted runner for unit tests: responses are matched on the exact
@@ -228,18 +288,23 @@ pub mod fake {
         }
 
         pub fn executed(&self) -> Vec<String> {
-            self.calls.lock().unwrap().iter().map(|c| c.display()).collect()
+            self.calls.lock().unwrap().iter().map(|c| c.display_string()).collect()
         }
     }
 
     #[async_trait]
     impl Runner for FakeRunner {
-        async fn run(&self, cmd: &Cmd) -> Result<CmdOutput, PkgError> {
+        async fn run_streaming(&self, cmd: &Cmd, sink: &dyn OutputSink) -> Result<CmdOutput, PkgError> {
             self.calls.lock().unwrap().push(cmd.clone());
-            match self.responses.get(&cmd.display()) {
-                Some(Ok(o)) => Ok(o.clone()),
+            sink.line(LineStream::Command, &cmd.display_string());
+            match self.responses.get(&cmd.display_string()) {
+                Some(Ok(o)) => {
+                    o.stdout.lines().for_each(|l| sink.line(LineStream::Stdout, l));
+                    o.stderr.lines().for_each(|l| sink.line(LineStream::Stderr, l));
+                    Ok(o.clone())
+                }
                 Some(Err(_)) => Err(PkgError::ToolMissing(cmd.program.to_string())),
-                None => Err(PkgError::Exec(format!("unexpected command: {}", cmd.display()))),
+                None => Err(PkgError::Exec(format!("unexpected command: {}", cmd.display_string()))),
             }
         }
     }
@@ -297,5 +362,40 @@ mod tests {
     async fn missing_binary_is_tool_missing() {
         let e = SystemRunner.run(&Cmd::new("definitely-not-a-real-binary", &[])).await.unwrap_err();
         assert!(matches!(e, PkgError::ToolMissing(_)));
+    }
+
+    #[derive(Default)]
+    struct Collect(std::sync::Mutex<Vec<(LineStream, String)>>);
+
+    impl OutputSink for Collect {
+        fn line(&self, stream: LineStream, text: &str) {
+            self.0.lock().unwrap().push((stream, text.to_string()));
+        }
+    }
+
+    #[tokio::test]
+    async fn system_runner_streams_lines_as_they_are_produced() {
+        let sink = Collect::default();
+        let script = "printf 'a\\nb\\r50%%\\r100%%\\n'; echo oops >&2";
+        let o = SystemRunner.run_streaming(&Cmd::new("sh", &["-c", script]), &sink).await.unwrap();
+        assert!(o.success);
+        let lines = sink.0.lock().unwrap().clone();
+        assert_eq!(lines[0], (LineStream::Command, format!("sh -c {script}")));
+        let out: Vec<&str> = lines.iter().filter(|(s, _)| *s == LineStream::Stdout).map(|(_, t)| t.as_str()).collect();
+        assert_eq!(out, ["a", "b", "50%", "100%"]);
+        assert!(lines.contains(&(LineStream::Stderr, "oops".to_string())));
+        assert_eq!(o.stdout, "a\nb\n50%\n100%\n");
+    }
+
+    #[tokio::test]
+    async fn timeout_keeps_partial_output() {
+        let sink = Collect::default();
+        let o = SystemRunner
+            .run_streaming(&Cmd::new("sh", &["-c", "echo started; sleep 5"]).timeout_secs(1), &sink)
+            .await
+            .unwrap();
+        assert!(o.timed_out);
+        assert_eq!(o.stdout, "started\n");
+        assert!(sink.0.lock().unwrap().iter().any(|(_, t)| t.contains("timed out")));
     }
 }

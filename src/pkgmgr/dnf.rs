@@ -144,6 +144,10 @@ impl PackageManager for Dnf {
     async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
         r.run(&Cmd::new("dnf", &["-y", "install"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
     }
+
+    async fn remove(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
+        r.run(&Cmd::new("dnf", &["-y", "remove"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
+    }
 }
 
 #[cfg(test)]
@@ -219,5 +223,12 @@ mod tests {
         Dnf.install_updates(&r, &["vim".into()], false).await.unwrap();
         Dnf.install(&r, &["git".into()]).await.unwrap();
         assert!(r.calls.lock().unwrap().iter().all(|c| c.privileged));
+    }
+
+    #[tokio::test]
+    async fn remove_command() {
+        let r = FakeRunner::new().on("dnf -y remove git", "");
+        assert!(Dnf.remove(&r, &["git".into()]).await.unwrap().success);
+        assert!(r.calls.lock().unwrap()[0].privileged);
     }
 }

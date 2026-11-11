@@ -28,30 +28,20 @@ On an unsupported distro every operation returns `501`.
 - `DECK_PKG_READONLY=1` disables every mutating endpoint (`403`).
 - Package names are restricted to `[A-Za-z0-9+._:@/=~-]`, ≤128 chars, never starting with `-`
   (max 100 per request). Commands are executed directly, never through a shell.
-- One mutating operation runs at a time (`409` otherwise).
+- Job output may contain anything the package manager prints (including package scripts' output); treat it as untrusted text and render it as text, never as HTML.
+- One mutating operation (job) runs at a time (`409` otherwise).
 - Operations time out (refresh 5 min, installs 30 min, Gentoo 2 h); returned output is capped at 1 MiB per stream.
 
 ## Conventions
 
-- JSON in/out. Errors: `{"error": "message"}`.
-- Status codes: `400` invalid input · `403` read-only mode · `409` operation in progress ·
-  `500` command could not run / read command failed · `501` unsupported distro or operation.
-- Mutating operations that *ran* return `200` even if the command failed: check `success`.
+- JSON in/out. Errors: `{"error": "message"}` (plus `running_job` on `409`).
+- Status codes: `400` invalid input · `403` read-only mode · `404` unknown job ·
+  `409` another operation is running · `500` a read command failed · `501` unsupported distro.
 - Updates reflect the current cache. Call `refresh` first for fresh data.
-
-### Command result (returned by every mutating endpoint)
-
-```json
-{
-  "manager": "apt",
-  "success": true,
-  "exit_code": 0,
-  "timed_out": false,
-  "stdout": "…",
-  "stderr": "",
-  "duration_ms": 2310
-}
-```
+- Read operations (`info`, `updates`, `search`) answer directly. **Mutating operations
+  (`refresh`, `install`, `remove`, `updates/install`) are background jobs**: they return `202`
+  immediately and their output is streamed (see [Jobs and output streaming](#jobs-and-output-streaming)).
+  Failures (non-zero exit, timeout, unsupported operation) show up as a `failed` job, not an HTTP error.
 
 ## Endpoints
 
@@ -62,11 +52,6 @@ On an unsupported distro every operation returns `501`.
 ```
 
 `manager` and `security_support` are `null` on unsupported distros.
-
-### `POST /api/packages/refresh`
-
-Refreshes the package cache (`apt-get update`, `dnf makecache --refresh`, `zypper refresh`,
-`pacman -Sy`, `emerge --sync`, `apk update`). No body. Returns a command result.
 
 ### `GET /api/packages/updates[?security=true]`
 
@@ -92,21 +77,6 @@ Lists pending updates; `security=true` keeps only security fixes.
 summary (zypper). On zypper, security fixes are *patches* that can't be mapped reliably to
 packages, so each appears as its own entry (`name` = patch name, `new_version` = `null`).
 
-### `POST /api/packages/updates/install`
-
-Body (all optional): `{"packages": ["curl"], "security_only": false}`
-
-Empty `packages` upgrades everything. Returns a command result.
-
-| Manager | Selected packages | `security_only` |
-|---|---|---|
-| apt | yes | yes (installs the flagged packages) |
-| dnf | yes | yes (`--security`) |
-| zypper | yes | yes (`patch --category security`, not combinable with `packages`) |
-| pacman | `501` (partial upgrades unsupported on Arch) | `501` |
-| emerge | yes | `501` |
-| apk | yes | `501` |
-
 ### `GET /api/packages/search?q=<text>`
 
 ```json
@@ -116,16 +86,114 @@ Empty `packages` upgrades everything. Returns a command result.
 
 `version` is only filled where the manager reports it (pacman, emerge, apk).
 
-### `POST /api/packages/install`
+### Mutating operations (return `202` + a job)
 
-Body: `{"packages": ["git", "curl"]}` (non-empty). Returns a command result.
+| Endpoint | Body | Command (apt example) |
+|---|---|---|
+| `POST /api/packages/refresh` | – | `apt-get update` |
+| `POST /api/packages/install` | `{"packages": ["git"]}` (non-empty) | `apt-get install -y git` |
+| `POST /api/packages/remove` | `{"packages": ["git"]}` (non-empty) | `apt-get remove -y git` |
+| `POST /api/packages/updates/install` | `{"packages": [], "security_only": false}` (both optional) | `apt-get upgrade -y` |
 
-## Example
+`updates/install` upgrades everything when `packages` is empty.
+
+| Manager | Selected packages | `security_only` |
+|---|---|---|
+| apt | yes | yes (installs the flagged packages) |
+| dnf | yes | yes (`--security`) |
+| zypper | yes | yes (`patch --category security`, not combinable with `packages`) |
+| pacman | unsupported (no partial upgrades on Arch) | unsupported |
+| emerge | yes | unsupported |
+| apk | yes | unsupported |
+
+Unsupported combinations produce a `failed` job whose `result.error` explains why.
+
+Response (`202 Accepted`, with a `Location` header pointing at `url`):
+
+```json
+{
+  "job": { "id": "6af3c701-1", "operation": "install", "manager": "apt", "packages": ["git"],
+           "status": "running", "started_at": 1794361089, "finished_at": null,
+           "duration_ms": null, "line_count": 0, "truncated": false, "result": null },
+  "url": "/api/packages/jobs/6af3c701-1",
+  "stream_url": "/api/packages/jobs/6af3c701-1/stream"
+}
+```
+
+Only one job runs at a time; starting another returns `409` with `running_job` so a client can
+attach to it instead.
+
+## Jobs and output streaming
+
+A job keeps running if the client disconnects (a closed browser tab must not kill an
+installation). Output is recorded, so you can attach at any time, replay from the start, or
+resume after a dropped connection. The last 50 jobs are kept in memory (lost on restart);
+each keeps at most 20 000 lines (`truncated: true` afterwards).
+
+### `GET /api/packages/jobs`
+
+Recent jobs, newest first (`{"count": n, "jobs": [ … ]}`), without output.
+
+### `GET /api/packages/jobs/{id}`
+
+The job fields above plus the full recorded `output`:
+
+```json
+{ "id": "6af3c701-1", "status": "succeeded", "…": "…",
+  "result": { "success": true, "exit_code": 0, "timed_out": false, "error": null },
+  "output": [
+    { "seq": 0, "stream": "command", "text": "apt-get install -y git" },
+    { "seq": 1, "stream": "stdout",  "text": "Reading package lists..." },
+    { "seq": 2, "stream": "stderr",  "text": "…" }
+  ] }
+```
+
+`status` is `running`, `succeeded` or `failed`. `stream` is `command` (the command being run;
+an operation can run several), `stdout` or `stderr`. Carriage-return progress updates arrive as
+separate lines.
+
+### `GET /api/packages/jobs/{id}/stream`
+
+[Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events). Works with
+the browser's `EventSource` (which is GET-only, hence the separate job resource).
+
+| Event | `id:` | `data:` |
+|---|---|---|
+| `output` | line `seq` | `{"seq": 1, "stream": "stdout", "text": "…"}` |
+| `done` | – | the final job object (`status`, `result`, `duration_ms`, …) |
+
+- A running job streams live; a finished job replays everything. The stream always ends after
+  `done`.
+- **Resume:** pass `?after=<seq>` or the `Last-Event-ID` header (sent automatically by
+  `EventSource` when it reconnects); only lines after that `seq` are sent.
+- Keep-alive comments are sent periodically, and `X-Accel-Buffering: no` is set so nginx does
+  not buffer the stream.
+- **`EventSource` reconnects automatically when the stream ends**, so close it on `done`.
+
+```js
+const res = await fetch('/api/packages/install', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ packages: ['htop'] })
+});
+if (res.status === 409) { /* attach to (await res.json()).running_job instead */ }
+const { stream_url } = await res.json();
+
+const es = new EventSource(stream_url);
+es.addEventListener('output', (e) => append(JSON.parse(e.data))); // {seq, stream, text}
+es.addEventListener('done', (e) => {
+  es.close();
+  showResult(JSON.parse(e.data)); // {status, result, …}
+});
+```
+
+## Example (curl)
 
 ```bash
 curl -s localhost:8080/api/packages/info
-curl -s -XPOST localhost:8080/api/packages/refresh
 curl -s 'localhost:8080/api/packages/updates?security=true'
+curl -s -XPOST localhost:8080/api/packages/refresh          # -> {"stream_url": …}
+curl -sN localhost:8080/api/packages/jobs/<id>/stream       # live output
 curl -s -XPOST -H 'content-type: application/json' \
      -d '{"packages":["htop"]}' localhost:8080/api/packages/install
 ```

@@ -30,11 +30,18 @@ one port. Linux-only (reads `/proc`, `/sys`).
     timeout, `sudo -n` when not root) and a `FakeRunner` for tests.
   - one file per manager. Pure `parse_*` functions (take `&str`, fixture-tested) plus a thin
     async impl that builds `Cmd`s. Prefer machine-readable output (e.g. zypper `--xmlout`).
-  - `src/packages.rs` — `/api/packages/*` routes. Docs live in `docs/packages-api.md`; keep
+  - `jobs.rs` — background jobs for mutating operations: output recorded with sequence
+    numbers, replayable/resumable event stream, one running job at a time, panic-safe.
+    Operations never write to HTTP responses directly; they emit lines through the runner.
+  - `src/packages.rs` — `/api/packages/*` routes (mutations return 202 + job; output via
+    SSE at `/jobs/{id}/stream`). Docs live in `docs/packages-api.md`; keep
     them in sync with routes and JSON shapes.
   - Adding a manager: new file implementing the trait, register in `ManagerKind` and
     `kind_from_distro_id`, add fixture tests, update the docs table.
-  - Mutating endpoints (refresh/install) need root; they run via `sudo -n`, are serialised,
+  - Every mutating operation (refresh, install, remove, upgrade) must go through
+    `PackageService::start_job` so its output is streamable. Add new operations as a trait
+    method + job, never as a blocking request.
+  - Mutating endpoints (refresh/install/remove) need root; they run via `sudo -n`, are serialised,
     and are disabled by `DECK_PKG_READONLY=1`. Never build commands from unvalidated input
     (use `validate_packages` / `validate_query`).
 - `web/src/lib/` — `api.ts` (types mirror backend JSON, snake_case),

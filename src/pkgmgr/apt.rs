@@ -80,6 +80,7 @@ impl PackageManager for Apt {
             let updates = self.list_updates(r).await?;
             let names = security_names(&updates, packages);
             if names.is_empty() {
+                r.note("no security updates to install");
                 return Ok(CmdOutput { success: true, exit_code: Some(0), stdout: "no security updates to install\n".into(), ..Default::default() });
             }
             names
@@ -104,6 +105,10 @@ impl PackageManager for Apt {
     async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
         let cmd = apt_get(&["install", "-y"]).with_args(CONF_OPTS.map(String::from)).with_args(packages.to_vec());
         r.run(&cmd.timeout_secs(1800)).await
+    }
+
+    async fn remove(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
+        r.run(&apt_get(&["remove", "-y"]).with_args(packages.to_vec()).timeout_secs(1800)).await
     }
 }
 
@@ -172,5 +177,12 @@ openssl/stable-security 3.0.15-1~deb12u1 amd64 [upgradable from: 3.0.14-1~deb12u
         let o = Apt.install_updates(&r, &[], true).await.unwrap();
         assert!(o.success);
         assert_eq!(r.executed(), vec!["apt list --upgradable"]);
+    }
+
+    #[tokio::test]
+    async fn remove_command() {
+        let r = FakeRunner::new().on("apt-get remove -y git", "");
+        assert!(Apt.remove(&r, &["git".into()]).await.unwrap().success);
+        assert!(r.calls.lock().unwrap()[0].privileged);
     }
 }

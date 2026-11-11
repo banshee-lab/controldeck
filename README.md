@@ -64,7 +64,8 @@ The service runs as a dynamic unprivileged user and stores metrics in
 - `GET /api/metrics/current` — latest sample plus full system status
 - `GET /api/metrics/history?minutes=30` — samples (default 30, max 10080)
 - `/api/packages/*` — package management (refresh cache, list updates and security fixes,
-  install updates, search, install) for apt, dnf, zypper, pacman, emerge and apk; see
+  install updates, search, install, remove) for apt, dnf, zypper, pacman, emerge and apk.
+  Mutating calls run as background jobs whose output streams live over SSE; see
   [docs/packages-api.md](docs/packages-api.md). Mutating calls need root/sudo, and can be
   disabled with `DECK_PKG_READONLY=1`.
 
