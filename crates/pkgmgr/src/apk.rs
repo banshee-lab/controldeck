@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use super::{
-    Cmd, CmdOutput, PackageManager, PkgError, Runner, SearchResult, SecuritySupport, Update,
+    Cmd, CmdOutput, run, PackageManager, PkgError, Runner, SearchResult, SecuritySupport, Update,
     require_ok, split_name_version,
 };
 use std::collections::HashSet;
@@ -56,11 +56,11 @@ impl PackageManager for Apk {
     }
 
     async fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("apk", &["update"]).privileged().timeout_secs(300)).await
+        run(r, &Cmd::new("apk", &["update"]).timeout_secs(300)).await
     }
 
     async fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError> {
-        let out = require_ok(r.run(&Cmd::new("apk", &["version", "-l", "<"])).await?, "apk version")?;
+        let out = require_ok(run(r, &Cmd::new("apk", &["version", "-l", "<"])).await?, "apk version")?;
         Ok(parse_version_list(&out.stdout))
     }
 
@@ -73,27 +73,27 @@ impl PackageManager for Apk {
         } else {
             Cmd::new("apk", &["add", "-u"]).with_args(packages.to_vec())
         };
-        r.run(&cmd.privileged().timeout_secs(1800)).await
+        run(r, &cmd.timeout_secs(1800)).await
     }
 
     async fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError> {
-        let out = require_ok(r.run(&Cmd::new("apk", &["search", "-v", "-d", query])).await?, "apk search")?;
+        let out = require_ok(run(r, &Cmd::new("apk", &["search", "-v", "-d", query])).await?, "apk search")?;
         Ok(parse_search(&out.stdout))
     }
 
     async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("apk", &["add"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
+        run(r, &Cmd::new("apk", &["add"]).with_args(packages.to_vec()).timeout_secs(1800)).await
     }
 
     async fn remove(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("apk", &["del"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
+        run(r, &Cmd::new("apk", &["del"]).with_args(packages.to_vec()).timeout_secs(1800)).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pkgmgr::exec::fake::FakeRunner;
+    use controldeck_agent_sdk::exec::fake::FakeRunner;
 
     #[test]
     fn parses_version_list() {
@@ -133,6 +133,5 @@ mod tests {
     async fn remove_command() {
         let r = FakeRunner::new().on("apk del git", "");
         assert!(Apk.remove(&r, &["git".into()]).await.unwrap().success);
-        assert!(r.calls.lock().unwrap()[0].privileged);
     }
 }

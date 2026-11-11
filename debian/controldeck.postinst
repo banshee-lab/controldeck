@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = configure ]; then
+	getent group controldeck >/dev/null || groupadd --system controldeck
+	getent passwd controldeck >/dev/null || useradd --system --gid controldeck \
+		--home-dir /var/lib/controldeck --no-create-home --shell /usr/sbin/nologin \
+		--comment "ControlDeck web server" controldeck
+fi
+
+#DEBHELPER#

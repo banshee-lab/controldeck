@@ -1,6 +1,7 @@
-//! Package manager abstraction layer.
+//! Package manager plugin for the privileged ControlDeck agent.
 //!
-//! [`PackageManager`] exposes the operations ControlDeck needs (refresh the
+//! [`plugin::PackagesPlugin`] is the agent-facing entry point (module
+//! `packages`). Below it, [`PackageManager`] exposes the operations ControlDeck needs (refresh the
 //! cache, list updates / security fixes, install updates, search, install).
 //! There is one implementation per distro family, each in its own file; the
 //! running distro is detected from `/etc/os-release` ([`detect`]).
@@ -13,16 +14,17 @@ mod apk;
 mod apt;
 mod dnf;
 mod emerge;
-pub mod exec;
-pub mod jobs;
 mod pacman;
+pub mod plugin;
 mod zypper;
 
 use async_trait::async_trait;
+use controldeck_agent_sdk::exec::ExecError;
 use serde::Serialize;
 use std::{fmt, sync::Arc};
 
-pub use exec::{Cmd, CmdOutput, Runner, SystemRunner};
+pub use controldeck_agent_sdk::exec::{Cmd, CmdOutput, Runner, SystemRunner};
+pub use plugin::PackagesPlugin;
 
 /// A pending update.
 ///
@@ -94,6 +96,15 @@ impl fmt::Display for PkgError {
 }
 
 impl std::error::Error for PkgError {}
+
+impl From<ExecError> for PkgError {
+    fn from(e: ExecError) -> Self {
+        match e {
+            ExecError::ToolMissing(t) => PkgError::ToolMissing(t),
+            ExecError::Exec(m) => PkgError::Exec(m),
+        }
+    }
+}
 
 /// The operations every supported package manager provides.
 #[async_trait]
@@ -253,6 +264,11 @@ pub fn validate_query(q: &str) -> Result<(), PkgError> {
 // ---------------------------------------------------------------------------
 // Helpers shared by the implementations
 // ---------------------------------------------------------------------------
+
+/// Runs `cmd`, mapping execution failures into [`PkgError`].
+pub(crate) async fn run(r: &dyn Runner, cmd: &Cmd) -> Result<CmdOutput, PkgError> {
+    Ok(r.run(cmd).await?)
+}
 
 /// Turns a non-successful command into an error with its first stderr line.
 pub(crate) fn require_ok(out: CmdOutput, what: &str) -> Result<CmdOutput, PkgError> {

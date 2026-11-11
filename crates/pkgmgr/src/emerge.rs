@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use super::{
-    Cmd, CmdOutput, PackageManager, PkgError, Runner, SearchResult, SecuritySupport, Update,
+    Cmd, CmdOutput, run, PackageManager, PkgError, Runner, SearchResult, SecuritySupport, Update,
     require_ok, split_name_version,
 };
 use std::collections::HashMap;
@@ -93,16 +93,16 @@ impl PackageManager for Emerge {
     }
 
     async fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("emerge", &["--sync", "--quiet"]).privileged().timeout_secs(1800)).await
+        run(r, &Cmd::new("emerge", &["--sync", "--quiet"]).timeout_secs(1800)).await
     }
 
     async fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError> {
         let out = require_ok(
-            r.run(&Cmd::new("emerge", &["--pretend", "--update", "--deep", "--newuse", "--color", "n", "--nospinner", "@world"]).timeout_secs(600)).await?,
+            run(r, &Cmd::new("emerge", &["--pretend", "--update", "--deep", "--newuse", "--color", "n", "--nospinner", "@world"]).timeout_secs(600)).await?,
             "emerge --pretend",
         )?;
         let mut updates = parse_pretend(&out.stdout);
-        match r.run(&Cmd::new("glsa-check", &["-l", "affected"]).timeout_secs(300)).await {
+        match run(r, &Cmd::new("glsa-check", &["-l", "affected"]).timeout_secs(300)).await {
             Ok(g) if g.success => {
                 let glsa = parse_glsa(&g.stdout);
                 // Updates carry bare names; GLSA atoms are category/package.
@@ -129,27 +129,27 @@ impl PackageManager for Emerge {
         } else {
             Cmd::new("emerge", &["--update", "--newuse", "--color", "n", "--nospinner"]).with_args(packages.to_vec())
         };
-        r.run(&cmd.privileged().timeout_secs(7200)).await
+        run(r, &cmd.timeout_secs(7200)).await
     }
 
     async fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError> {
-        let out = require_ok(r.run(&Cmd::new("emerge", &["--search", "--color", "n", "--nospinner", query]).timeout_secs(300)).await?, "emerge --search")?;
+        let out = require_ok(run(r, &Cmd::new("emerge", &["--search", "--color", "n", "--nospinner", query]).timeout_secs(300)).await?, "emerge --search")?;
         Ok(parse_search(&out.stdout))
     }
 
     async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("emerge", &["--noreplace", "--color", "n", "--nospinner"]).with_args(packages.to_vec()).privileged().timeout_secs(7200)).await
+        run(r, &Cmd::new("emerge", &["--noreplace", "--color", "n", "--nospinner"]).with_args(packages.to_vec()).timeout_secs(7200)).await
     }
 
     async fn remove(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("emerge", &["--unmerge", "--color", "n", "--nospinner"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
+        run(r, &Cmd::new("emerge", &["--unmerge", "--color", "n", "--nospinner"]).with_args(packages.to_vec()).timeout_secs(1800)).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pkgmgr::exec::fake::FakeRunner;
+    use controldeck_agent_sdk::exec::fake::FakeRunner;
 
     const PRETEND: &str = "\nCalculating dependencies... done!\n[ebuild     U  ] sys-libs/glibc-2.38-r10:2.2 [2.37-r7:2.2]\n[ebuild  N     ] dev-libs/newdep-1.0\n[ebuild     UD ] app-misc/down-1.0 [2.0]\n[ebuild     U  ] dev-libs/openssl-3.0.13 [3.0.12-r1] USE=\"asm\"\n";
     const GLSA: &str = "Checking GLSAs\n202401-01 [N] OpenSSL: Multiple Vulnerabilities (dev-libs/openssl)\n202402-03 [A] Foo: bar (net-misc/foo, net-misc/baz)\n";
@@ -218,6 +218,5 @@ mod tests {
     async fn remove_command() {
         let r = FakeRunner::new().on("emerge --unmerge --color n --nospinner git", "");
         assert!(Emerge.remove(&r, &["git".into()]).await.unwrap().success);
-        assert!(r.calls.lock().unwrap()[0].privileged);
     }
 }

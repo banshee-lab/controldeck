@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use super::{
-    Cmd, CmdOutput, PackageManager, PkgError, Runner, SearchResult, SecuritySupport, Update,
+    Cmd, CmdOutput, run, PackageManager, PkgError, Runner, SearchResult, SecuritySupport, Update,
     require_ok,
 };
 use std::collections::HashMap;
@@ -101,13 +101,13 @@ impl PackageManager for Dnf {
     }
 
     async fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("dnf", &["-y", "makecache", "--refresh"]).privileged().timeout_secs(300)).await
+        run(r, &Cmd::new("dnf", &["-y", "makecache", "--refresh"]).timeout_secs(300)).await
     }
 
     async fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError> {
         // check-update exits 100 when updates are available.
         let out = require_ok(
-            r.run(&Cmd::new("dnf", &["-q", "check-update"]).ok_codes(&[0, 100]).timeout_secs(300)).await?,
+            run(r, &Cmd::new("dnf", &["-q", "check-update"]).ok_codes(&[0, 100]).timeout_secs(300)).await?,
             "dnf check-update",
         )?;
         let mut updates = parse_check_update(&out.stdout);
@@ -115,7 +115,7 @@ impl PackageManager for Dnf {
             return Ok(updates);
         }
         let info = require_ok(
-            r.run(&Cmd::new("dnf", &["-q", "updateinfo", "list", "--security"]).timeout_secs(300)).await?,
+            run(r, &Cmd::new("dnf", &["-q", "updateinfo", "list", "--security"]).timeout_secs(300)).await?,
             "dnf updateinfo",
         )?;
         let sec = parse_updateinfo(&info.stdout);
@@ -133,27 +133,27 @@ impl PackageManager for Dnf {
         if security_only {
             args.push("--security");
         }
-        r.run(&Cmd::new("dnf", &args).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
+        run(r, &Cmd::new("dnf", &args).with_args(packages.to_vec()).timeout_secs(1800)).await
     }
 
     async fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError> {
-        let out = require_ok(r.run(&Cmd::new("dnf", &["-q", "search", query]).timeout_secs(300)).await?, "dnf search")?;
+        let out = require_ok(run(r, &Cmd::new("dnf", &["-q", "search", query]).timeout_secs(300)).await?, "dnf search")?;
         Ok(parse_search(&out.stdout))
     }
 
     async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("dnf", &["-y", "install"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
+        run(r, &Cmd::new("dnf", &["-y", "install"]).with_args(packages.to_vec()).timeout_secs(1800)).await
     }
 
     async fn remove(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("dnf", &["-y", "remove"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
+        run(r, &Cmd::new("dnf", &["-y", "remove"]).with_args(packages.to_vec()).timeout_secs(1800)).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pkgmgr::exec::fake::FakeRunner;
+    use controldeck_agent_sdk::exec::fake::FakeRunner;
 
     const CHECK: &str = "\nopenssl-libs.x86_64     1:3.2.2-1.fc40     updates\nvim-minimal.x86_64      2:9.1.100-1.fc40   updates\n\nObsoleting Packages\nfoo.x86_64  1.0-1  updates\n    bar.x86_64  0.9-1  @fedora\n";
     const INFO_DNF4: &str = "FEDORA-2024-abc123 Important/Sec. openssl-libs-1:3.2.2-1.fc40.x86_64\nFEDORA-2024-def456 Low/Sec.       unrelated-1.0-1.fc40.noarch\n";
@@ -222,13 +222,11 @@ mod tests {
         Dnf.install_updates(&r, &[], true).await.unwrap();
         Dnf.install_updates(&r, &["vim".into()], false).await.unwrap();
         Dnf.install(&r, &["git".into()]).await.unwrap();
-        assert!(r.calls.lock().unwrap().iter().all(|c| c.privileged));
     }
 
     #[tokio::test]
     async fn remove_command() {
         let r = FakeRunner::new().on("dnf -y remove git", "");
         assert!(Dnf.remove(&r, &["git".into()]).await.unwrap().success);
-        assert!(r.calls.lock().unwrap()[0].privileged);
     }
 }

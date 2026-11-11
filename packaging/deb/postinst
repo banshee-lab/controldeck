@@ -1,14 +1,20 @@
 #!/bin/sh
 set -e
-if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
-	systemctl daemon-reload || true
-	if [ -z "$2" ]; then
-		# fresh install: register and start
-		systemctl enable controldeck.service || true
-		systemctl start controldeck.service || true
-	else
-		# upgrade: keep the admin's enable/disable choice, restart if running
-		systemctl try-restart controldeck.service || true
+if [ "$1" = configure ]; then
+	getent group controldeck >/dev/null || groupadd --system controldeck
+	getent passwd controldeck >/dev/null || useradd --system --gid controldeck \
+		--home-dir /var/lib/controldeck --no-create-home --shell /usr/sbin/nologin \
+		--comment "ControlDeck web server" controldeck
+	if [ -d /run/systemd/system ]; then
+		systemctl daemon-reload || true
+		if [ -z "$2" ]; then
+			# fresh install: register and start (agent first)
+			systemctl enable controldeck-agent.service controldeck.service || true
+			systemctl start controldeck-agent.service controldeck.service || true
+		else
+			# upgrade: keep the admin's enable/disable choice, restart if running
+			systemctl try-restart controldeck-agent.service controldeck.service || true
+		fi
 	fi
 fi
 exit 0

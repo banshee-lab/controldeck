@@ -1,17 +1,20 @@
-//! Background jobs for mutating package operations.
+//! Background jobs for long-running, mutating plugin operations.
 //!
-//! A job runs independently of any HTTP client (a browser closing the page must
+//! A job runs independently of any client (a browser closing the page must
 //! not kill an installation) and records every output line with a sequence
 //! number, so clients can attach at any time, replay from the start, or resume
-//! after a disconnect (`Last-Event-ID`). At most one job runs at a time.
+//! after a disconnect (`Last-Event-ID`). At most one job runs at a time per
+//! [`JobManager`]; each plugin owns its manager.
+//!
+//! Plugin-specific descriptive fields (e.g. `manager`, `packages`) travel in
+//! [`JobInfo::meta`] and are flattened into the job's JSON.
 
-use super::{
-    CmdOutput, PkgError,
-    exec::{LineStream, OutputSink, Runner},
-};
+use crate::exec::{CmdOutput, LineStream, OutputSink, Runner, ExecError};
 use async_trait::async_trait;
+use controldeck_proto::Event;
 use futures_util::Stream;
 use serde::Serialize;
+use serde_json::{Map, Value};
 use std::{
     collections::VecDeque,
     future::Future,
@@ -57,8 +60,9 @@ pub struct JobResult {
 pub struct JobInfo {
     pub id: String,
     pub operation: &'static str,
-    pub manager: &'static str,
-    pub packages: Vec<String>,
+    /// Plugin-specific fields, flattened into the JSON object.
+    #[serde(flatten)]
+    pub meta: Map<String, Value>,
     pub status: JobStatus,
     pub started_at: i64,
     pub finished_at: Option<i64>,
@@ -86,8 +90,7 @@ struct Inner {
 pub struct Job {
     id: String,
     operation: &'static str,
-    manager: &'static str,
-    packages: Vec<String>,
+    meta: Map<String, Value>,
     started_at: i64,
     started: Instant,
     inner: Mutex<Inner>,
@@ -104,12 +107,11 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Job {
-    fn new(id: String, operation: &'static str, manager: &'static str, packages: Vec<String>) -> Self {
+    fn new(id: String, operation: &'static str, meta: Map<String, Value>) -> Self {
         Self {
             id,
             operation,
-            manager,
-            packages,
+            meta,
             started_at: now_secs(),
             started: Instant::now(),
             inner: Mutex::new(Inner {
@@ -152,8 +154,7 @@ impl Job {
         JobInfo {
             id: self.id.clone(),
             operation: self.operation,
-            manager: self.manager,
-            packages: self.packages.clone(),
+            meta: self.meta.clone(),
             status: g.status,
             started_at: self.started_at,
             finished_at: g.finished_at,
@@ -219,6 +220,27 @@ impl Job {
     }
 }
 
+impl Job {
+    /// [`events`](Job::events) in wire form: `output` events (id = line
+    /// sequence number, data = the line) then one `done` event (data = the
+    /// final [`JobInfo`]).
+    pub fn rpc_events(self: Arc<Self>, after: Option<u64>) -> crate::EventStream {
+        use futures_util::StreamExt;
+        Box::pin(self.events(after).map(|ev| match ev {
+            JobEvent::Output(line) => Event {
+                event: Some("output".into()),
+                id: Some(line.seq.to_string()),
+                data: serde_json::to_value(&line).unwrap_or(Value::Null),
+            },
+            JobEvent::Done(info) => Event {
+                event: Some("done".into()),
+                id: None,
+                data: serde_json::to_value(&info).unwrap_or(Value::Null),
+            },
+        }))
+    }
+}
+
 impl OutputSink for Job {
     fn line(&self, stream: LineStream, text: &str) {
         {
@@ -247,7 +269,7 @@ struct Streamed {
 
 #[async_trait]
 impl Runner for Streamed {
-    async fn run_streaming(&self, cmd: &super::Cmd, _sink: &dyn OutputSink) -> Result<CmdOutput, PkgError> {
+    async fn run_streaming(&self, cmd: &crate::exec::Cmd, _sink: &dyn OutputSink) -> Result<CmdOutput, ExecError> {
         self.inner.run_streaming(cmd, self.job.as_ref()).await
     }
 
@@ -256,7 +278,8 @@ impl Runner for Streamed {
     }
 }
 
-pub type Work = Pin<Box<dyn Future<Output = Result<CmdOutput, PkgError>> + Send>>;
+/// The body of a job. Errors are reported as text in the job's output/result.
+pub type Work = Pin<Box<dyn Future<Output = Result<CmdOutput, String>> + Send>>;
 
 pub struct JobManager {
     runner: Arc<dyn Runner>,
@@ -274,8 +297,7 @@ impl JobManager {
     pub fn start(
         &self,
         operation: &'static str,
-        manager: &'static str,
-        packages: Vec<String>,
+        meta: Map<String, Value>,
         work: impl FnOnce(Arc<dyn Runner>) -> Work + Send + 'static,
     ) -> Result<Arc<Job>, String> {
         let job = {
@@ -284,7 +306,7 @@ impl JobManager {
                 return Err(running.id.clone());
             }
             let n = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
-            let job = Arc::new(Job::new(format!("{:x}-{n}", now_secs()), operation, manager, packages));
+            let job = Arc::new(Job::new(format!("{:x}-{n}", now_secs()), operation, meta));
             jobs.push_back(job.clone());
             while jobs.len() > MAX_JOBS {
                 jobs.pop_front();
@@ -328,7 +350,7 @@ impl JobManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pkgmgr::exec::fake::FakeRunner;
+    use crate::exec::fake::FakeRunner;
     use futures_util::StreamExt;
 
     fn manager(r: FakeRunner) -> JobManager {
@@ -341,7 +363,7 @@ mod tests {
                 let (prog, args) = line.split_once(' ').unwrap_or((line, ""));
                 let args: Vec<&str> = args.split_whitespace().collect();
                 let prog: &'static str = Box::leak(prog.to_string().into_boxed_str());
-                r.run(&super::super::Cmd::new(prog, &args)).await
+                r.run(&crate::exec::Cmd::new(prog, &args)).await.map_err(|e| e.to_string())
             })
         }
     }
@@ -353,7 +375,7 @@ mod tests {
     #[tokio::test]
     async fn streams_output_then_done() {
         let m = manager(FakeRunner::new().on("apt-get update", "Hit:1 a\nGet:2 b"));
-        let job = m.start("refresh", "apt", vec![], run_cmd("apt-get update")).unwrap();
+        let job = m.start("refresh", Map::new(), run_cmd("apt-get update")).unwrap();
         let ev = collect(job.clone(), None).await;
         let texts: Vec<String> = ev
             .iter()
@@ -369,7 +391,7 @@ mod tests {
     #[tokio::test]
     async fn late_subscriber_replays_and_resumes() {
         let m = manager(FakeRunner::new().on("apt-get update", "one\ntwo"));
-        let job = m.start("refresh", "apt", vec![], run_cmd("apt-get update")).unwrap();
+        let job = m.start("refresh", Map::new(), run_cmd("apt-get update")).unwrap();
         collect(job.clone(), None).await; // wait for completion
         let all = collect(job.clone(), None).await;
         assert_eq!(all.len(), 4); // command + 2 lines + done
@@ -383,7 +405,7 @@ mod tests {
     async fn failed_command_marks_job_failed() {
         let out = CmdOutput { success: false, exit_code: Some(100), stderr: "E: lock".into(), ..Default::default() };
         let m = manager(FakeRunner::new().on_output("apt-get update", out));
-        let job = m.start("refresh", "apt", vec![], run_cmd("apt-get update")).unwrap();
+        let job = m.start("refresh", Map::new(), run_cmd("apt-get update")).unwrap();
         let ev = collect(job, None).await;
         let Some(JobEvent::Done(info)) = ev.last() else { panic!() };
         assert_eq!(info.status, JobStatus::Failed);
@@ -394,7 +416,7 @@ mod tests {
     #[tokio::test]
     async fn error_is_reported_in_stream() {
         let m = manager(FakeRunner::new()); // unexpected command -> Err
-        let job = m.start("refresh", "apt", vec![], run_cmd("apt-get update")).unwrap();
+        let job = m.start("refresh", Map::new(), run_cmd("apt-get update")).unwrap();
         let ev = collect(job, None).await;
         let Some(JobEvent::Done(info)) = ev.last() else { panic!() };
         assert!(info.result.as_ref().unwrap().error.as_ref().unwrap().contains("unexpected command"));
@@ -403,11 +425,11 @@ mod tests {
     #[tokio::test]
     async fn panic_does_not_wedge_the_manager() {
         let m = manager(FakeRunner::new().on("apt-get update", ""));
-        let job = m.start("refresh", "apt", vec![], |_| Box::pin(async { panic!("boom") })).unwrap();
+        let job = m.start("refresh", Map::new(), |_| Box::pin(async { panic!("boom") })).unwrap();
         let ev = collect(job, None).await;
         let Some(JobEvent::Done(info)) = ev.last() else { panic!() };
         assert_eq!(info.status, JobStatus::Failed);
-        assert!(m.start("refresh", "apt", vec![], run_cmd("apt-get update")).is_ok());
+        assert!(m.start("refresh", Map::new(), run_cmd("apt-get update")).is_ok());
     }
 
     #[tokio::test]
@@ -415,18 +437,18 @@ mod tests {
         let m = manager(FakeRunner::new());
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         let first = m
-            .start("install", "apt", vec![], move |_| {
+            .start("install", Map::new(), move |_| {
                 Box::pin(async move {
                     let _ = rx.await;
                     Ok(CmdOutput::ok(""))
                 })
             })
             .unwrap();
-        let busy = m.start("refresh", "apt", vec![], run_cmd("apt-get update")).err().unwrap();
+        let busy = m.start("refresh", Map::new(), run_cmd("apt-get update")).err().unwrap();
         assert_eq!(busy, first.id());
         tx.send(()).unwrap();
         collect(first, None).await;
-        assert!(m.start("refresh", "apt", vec![], |_| Box::pin(async { Ok(CmdOutput::ok("")) })).is_ok());
+        assert!(m.start("refresh", Map::new(), |_| Box::pin(async { Ok(CmdOutput::ok("")) })).is_ok());
     }
 
     #[tokio::test]
@@ -434,7 +456,7 @@ mod tests {
         let m = manager(FakeRunner::new());
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         let job = m
-            .start("install", "apt", vec![], move |r| {
+            .start("install", Map::new(), move |r| {
                 Box::pin(async move {
                     r.note("started");
                     let _ = rx.await;
@@ -457,7 +479,7 @@ mod tests {
         let m = manager(FakeRunner::new());
         let mut last = String::new();
         for _ in 0..(MAX_JOBS + 5) {
-            let job = m.start("refresh", "apt", vec![], |_| Box::pin(async { Ok(CmdOutput::ok("")) })).unwrap();
+            let job = m.start("refresh", Map::new(), |_| Box::pin(async { Ok(CmdOutput::ok("")) })).unwrap();
             collect(job.clone(), None).await;
             last = job.id().to_string();
         }
@@ -470,7 +492,7 @@ mod tests {
 
     #[test]
     fn output_is_truncated_with_marker() {
-        let job = Job::new("t".into(), "refresh", "apt", vec![]);
+        let job = Job::new("t".into(), "refresh", Map::new());
         for i in 0..(MAX_LINES + 10) {
             job.line(LineStream::Stdout, &format!("l{i}"));
         }

@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use super::{
-    Cmd, CmdOutput, PackageManager, PkgError, Runner, SearchResult, SecuritySupport, Update,
+    Cmd, CmdOutput, run, PackageManager, PkgError, Runner, SearchResult, SecuritySupport, Update,
     require_ok, security_names,
 };
 
@@ -11,7 +11,7 @@ pub struct Apt;
 const NONINTERACTIVE: &str = "noninteractive";
 
 fn apt_get(args: &[&str]) -> Cmd {
-    Cmd::new("apt-get", args).privileged().env("DEBIAN_FRONTEND", NONINTERACTIVE)
+    Cmd::new("apt-get", args).env("DEBIAN_FRONTEND", NONINTERACTIVE)
 }
 
 const CONF_OPTS: [&str; 4] =
@@ -67,11 +67,11 @@ impl PackageManager for Apt {
     }
 
     async fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError> {
-        r.run(&apt_get(&["update"]).timeout_secs(300)).await
+        run(r, &apt_get(&["update"]).timeout_secs(300)).await
     }
 
     async fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError> {
-        let out = require_ok(r.run(&Cmd::new("apt", &["list", "--upgradable"])).await?, "apt list --upgradable")?;
+        let out = require_ok(run(r, &Cmd::new("apt", &["list", "--upgradable"])).await?, "apt list --upgradable")?;
         Ok(parse_upgradable(&out.stdout))
     }
 
@@ -94,28 +94,28 @@ impl PackageManager for Apt {
                 .with_args(CONF_OPTS.map(String::from))
                 .with_args(names)
         };
-        r.run(&cmd.timeout_secs(1800)).await
+        run(r, &cmd.timeout_secs(1800)).await
     }
 
     async fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError> {
-        let out = require_ok(r.run(&Cmd::new("apt-cache", &["search", query])).await?, "apt-cache search")?;
+        let out = require_ok(run(r, &Cmd::new("apt-cache", &["search", query])).await?, "apt-cache search")?;
         Ok(parse_search(&out.stdout))
     }
 
     async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
         let cmd = apt_get(&["install", "-y"]).with_args(CONF_OPTS.map(String::from)).with_args(packages.to_vec());
-        r.run(&cmd.timeout_secs(1800)).await
+        run(r, &cmd.timeout_secs(1800)).await
     }
 
     async fn remove(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
-        r.run(&apt_get(&["remove", "-y"]).with_args(packages.to_vec()).timeout_secs(1800)).await
+        run(r, &apt_get(&["remove", "-y"]).with_args(packages.to_vec()).timeout_secs(1800)).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pkgmgr::exec::fake::FakeRunner;
+    use controldeck_agent_sdk::exec::fake::FakeRunner;
 
     const UPGRADABLE: &str = "Listing...\n\
 curl/noble-updates,noble-security 8.5.0-2ubuntu10.6 amd64 [upgradable from: 8.5.0-2ubuntu10.5]\n\
@@ -149,7 +149,6 @@ openssl/stable-security 3.0.15-1~deb12u1 amd64 [upgradable from: 3.0.14-1~deb12u
         let o = Apt.install(&r, &["curl".into(), "git".into()]).await.unwrap();
         assert!(o.success);
         let calls = r.calls.lock().unwrap();
-        assert!(calls[0].privileged);
         assert!(calls[0].env.contains(&("DEBIAN_FRONTEND", "noninteractive")));
     }
 
@@ -183,6 +182,5 @@ openssl/stable-security 3.0.15-1~deb12u1 amd64 [upgradable from: 3.0.14-1~deb12u
     async fn remove_command() {
         let r = FakeRunner::new().on("apt-get remove -y git", "");
         assert!(Apt.remove(&r, &["git".into()]).await.unwrap().success);
-        assert!(r.calls.lock().unwrap()[0].privileged);
     }
 }

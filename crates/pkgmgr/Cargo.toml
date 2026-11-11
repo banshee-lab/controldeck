@@ -1,0 +1,19 @@
+[package]
+name = "controldeck-pkgmgr"
+version = "0.1.0"
+edition = "2024"
+description = "Package manager plugin (apt, dnf, zypper, pacman, emerge, apk) for the ControlDeck agent"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+async-trait = { workspace = true }
+controldeck-agent-sdk = { workspace = true }
+controldeck-proto = { workspace = true }
+futures-util = { workspace = true }
+roxmltree = "0.20"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+controldeck-agent-sdk = { workspace = true, features = ["test-util"] }

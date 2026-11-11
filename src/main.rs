@@ -1,7 +1,7 @@
+mod agent;
 mod collector;
 mod db;
 mod packages;
-mod pkgmgr;
 
 use axum::{
     Json, Router,
@@ -11,6 +11,7 @@ use axum::{
     routing::get,
 };
 use collector::{Sample, SystemInfo};
+use controldeck_proto::{AgentClient, DEFAULT_SOCKET};
 use rusqlite::Connection;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
@@ -29,7 +30,8 @@ struct Assets;
 struct AppState {
     db: Arc<Mutex<Connection>>,
     latest: Arc<Mutex<Option<Sample>>>,
-    packages: Arc<packages::PackageService>,
+    /// Connection to the privileged agent (the only way to do anything as root).
+    agent: AgentClient,
 }
 
 #[derive(Serialize)]
@@ -116,7 +118,8 @@ fn app(state: AppState) -> Router {
     Router::new()
         .route("/api/metrics/current", get(current))
         .route("/api/metrics/history", get(history))
-        .merge(packages::router(state.packages.clone()))
+        .merge(agent::router(state.agent.clone()))
+        .merge(packages::router(state.agent.clone()))
         .fallback(static_handler)
         .with_state(state)
 }
@@ -148,6 +151,7 @@ async fn main() {
         .unwrap_or_else(|_| default_db_path());
     let addr = std::env::var("DECK_ADDR").unwrap_or_else(|_| "127.0.0.1:9999".to_string());
     let interval = env_u64("DECK_INTERVAL_SECS", 5).max(1);
+    let agent_socket = std::env::var("DECK_AGENT_SOCKET").unwrap_or_else(|_| DEFAULT_SOCKET.to_string());
 
     let conn = db::init(&db_path).unwrap_or_else(|e| panic!("cannot open {}: {e}", db_path.display()));
     let _ = db::cleanup(&conn, now_secs());
@@ -155,9 +159,8 @@ async fn main() {
     let state = AppState {
         db: Arc::new(Mutex::new(conn)),
         latest: Arc::new(Mutex::new(None)),
-        packages: Arc::new(packages::PackageService::detect()),
+        agent: AgentClient::new(&agent_socket),
     };
-    println!("package manager: {}", state.packages.manager_name().unwrap_or("none (unsupported distro)"));
 
     // Collector: sample CPU/memory/disk every `interval` seconds.
     let s = state.clone();
@@ -201,7 +204,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .unwrap_or_else(|e| panic!("cannot bind {addr}: {e}"));
-    println!("controldeck listening on http://{addr} (db: {})", db_path.display());
+    println!("controldeck listening on http://{addr} (db: {}, agent: {agent_socket})", db_path.display());
     axum::serve(listener, app(state))
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -221,7 +224,7 @@ mod tests {
         AppState {
             db: Arc::new(Mutex::new(conn)),
             latest: Arc::new(Mutex::new(None)),
-            packages: Arc::new(packages::PackageService::new("test".into(), None, Arc::new(pkgmgr::SystemRunner), true)),
+            agent: AgentClient::new("/nonexistent/controldeck-agent.sock"),
         }
     }
 

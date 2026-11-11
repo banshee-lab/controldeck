@@ -1,3 +1,20 @@
+[workspace]
+members = ["crates/proto", "crates/agent-sdk", "crates/pkgmgr", "crates/agent"]
+resolver = "3"
+
+[workspace.dependencies]
+async-trait = "0.1"
+futures-util = "0.3"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "process", "io-util", "sync", "fs"] }
+controldeck-proto = { path = "crates/proto" }
+controldeck-agent-sdk = { path = "crates/agent-sdk" }
+controldeck-pkgmgr = { path = "crates/pkgmgr" }
+
+# The public binary: serves the embedded SPA and the HTTP API as an unprivileged
+# user. Everything that needs root lives in the separate `controldeck-agent`.
 [package]
 name = "controldeck"
 version = "0.1.0"
@@ -7,20 +24,22 @@ license = "AGPL-3.0-or-later"
 
 [dependencies]
 axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "process", "io-util"] }
+tokio = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 rust-embed = "8"
 mime_guess = "2"
-serde = { version = "1", features = ["derive"] }
-libc = "0.2"
-async-trait = "0.1"
-futures-util = "0.3"
-roxmltree = "0.20"
+serde = { workspace = true }
+serde_json = { workspace = true }
+libc = { workspace = true }
+futures-util = { workspace = true }
+controldeck-proto = { workspace = true }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-serde_json = "1"
+async-trait = { workspace = true }
+controldeck-agent-sdk = { workspace = true, features = ["test-util"] }
+controldeck-pkgmgr = { workspace = true }
 
 [profile.release]
 lto = true
@@ -33,37 +52,47 @@ maintainer = "banshee-lab <noreply@github.com>"
 section = "admin"
 priority = "optional"
 depends = "$auto"
-extended-description = "ControlDeck serves a mobile-first dashboard with live and historical CPU, memory and disk metrics, and is managed through systemd (controldeck.service)."
+extended-description = "ControlDeck serves a mobile-first dashboard with live and historical CPU, memory and disk metrics, and package management. It ships two systemd services: controldeck (web, unprivileged) and controldeck-agent (root, reachable only by the web service)."
 assets = [
 	["target/release/controldeck", "usr/bin/", "755"],
+	["target/release/controldeck-agent", "usr/bin/", "755"],
 	["packaging/controldeck.service", "usr/lib/systemd/system/controldeck.service", "644"],
+	["packaging/controldeck-agent.service", "usr/lib/systemd/system/controldeck-agent.service", "644"],
 	["packaging/controldeck.env", "etc/controldeck/controldeck.env", "644"],
+	["packaging/agent.env", "etc/controldeck/agent.env", "600"],
 	["LICENSE", "usr/share/doc/controldeck/LICENSE", "644"],
 ]
-conf-files = ["/etc/controldeck/controldeck.env"]
+conf-files = ["/etc/controldeck/controldeck.env", "/etc/controldeck/agent.env"]
 maintainer-scripts = "packaging/deb"
 
 [package.metadata.generate-rpm]
 assets = [
 	{ source = "target/release/controldeck", dest = "/usr/bin/controldeck", mode = "755" },
+	{ source = "target/release/controldeck-agent", dest = "/usr/bin/controldeck-agent", mode = "755" },
 	{ source = "packaging/controldeck.service", dest = "/usr/lib/systemd/system/controldeck.service", mode = "644" },
+	{ source = "packaging/controldeck-agent.service", dest = "/usr/lib/systemd/system/controldeck-agent.service", mode = "644" },
 	{ source = "packaging/controldeck.env", dest = "/etc/controldeck/controldeck.env", mode = "644", config = "noreplace" },
+	{ source = "packaging/agent.env", dest = "/etc/controldeck/agent.env", mode = "600", config = "noreplace" },
 	{ source = "LICENSE", dest = "/usr/share/doc/controldeck/LICENSE", mode = "644", doc = true },
 ]
+pre_install_script = '''
+getent group controldeck >/dev/null || groupadd -r controldeck
+getent passwd controldeck >/dev/null || useradd -r -g controldeck -d /var/lib/controldeck -M -s /sbin/nologin -c "ControlDeck web server" controldeck
+'''
 post_install_script = '''
 if [ -d /run/systemd/system ]; then
 	systemctl daemon-reload || :
 	if [ "$1" -eq 1 ]; then
-		systemctl enable controldeck.service || :
-		systemctl start controldeck.service || :
+		systemctl enable controldeck-agent.service controldeck.service || :
+		systemctl start controldeck-agent.service controldeck.service || :
 	else
-		systemctl try-restart controldeck.service || :
+		systemctl try-restart controldeck-agent.service controldeck.service || :
 	fi
 fi
 '''
 pre_uninstall_script = '''
 if [ "$1" -eq 0 ] && [ -d /run/systemd/system ]; then
-	systemctl disable --now controldeck.service || :
+	systemctl disable --now controldeck.service controldeck-agent.service || :
 fi
 '''
 post_uninstall_script = '''
