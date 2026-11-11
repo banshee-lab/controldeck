@@ -1,5 +1,7 @@
 mod collector;
 mod db;
+mod packages;
+mod pkgmgr;
 
 use axum::{
     Json, Router,
@@ -27,6 +29,7 @@ struct Assets;
 struct AppState {
     db: Arc<Mutex<Connection>>,
     latest: Arc<Mutex<Option<Sample>>>,
+    packages: Arc<packages::PackageService>,
 }
 
 #[derive(Serialize)]
@@ -113,6 +116,7 @@ fn app(state: AppState) -> Router {
     Router::new()
         .route("/api/metrics/current", get(current))
         .route("/api/metrics/history", get(history))
+        .merge(packages::router(state.packages.clone()))
         .fallback(static_handler)
         .with_state(state)
 }
@@ -151,7 +155,9 @@ async fn main() {
     let state = AppState {
         db: Arc::new(Mutex::new(conn)),
         latest: Arc::new(Mutex::new(None)),
+        packages: Arc::new(packages::PackageService::detect()),
     };
+    println!("package manager: {}", state.packages.manager_name().unwrap_or("none (unsupported distro)"));
 
     // Collector: sample CPU/memory/disk every `interval` seconds.
     let s = state.clone();
@@ -215,6 +221,7 @@ mod tests {
         AppState {
             db: Arc::new(Mutex::new(conn)),
             latest: Arc::new(Mutex::new(None)),
+            packages: Arc::new(packages::PackageService::new("test".into(), None, Arc::new(pkgmgr::SystemRunner), true)),
         }
     }
 
