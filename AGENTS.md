@@ -23,6 +23,10 @@ one port. Linux-only (reads `/proc`, `/sys`).
 - `src/db.rs` — schema, insert, history, 7-day `cleanup`.
 - `src/main.rs` — router, embedded static handler with SPA fallback, background
   collector and retention tasks, env config.
+- `src/pkgmgr/` — package manager abstraction: `mod.rs` (trait, detection, validation),
+  `exec.rs` (command runner, fake runner for tests), one file per manager. Pure `parse_*`
+  functions + fixture tests. `src/packages.rs` — `/api/packages/*` routes. Docs:
+  `docs/packages-api.md` (keep in sync).
 - `web/src/lib/` — `api.ts` (types mirror backend JSON, snake_case),
   `format.ts`, `chart.ts` (pure, tested), `Gauge.svelte`, `LineChart.svelte`.
 - `web/src/routes/+page.svelte` — dashboard (polls every 5 s).

@@ -53,6 +53,8 @@ The service runs as a dynamic unprivileged user and stores metrics in
 | `DECK_ADDR` | `127.0.0.1:8080` | Listen address |
 | `DECK_DB` | `<binary dir>/db/metrics.db` | SQLite file |
 | `DECK_INTERVAL_SECS` | `5` | Sampling interval |
+| `DECK_PKG_MANAGER` | auto-detected | Force a package manager (`apt`, `dnf`, `zypper`, `pacman`, `emerge`, `apk`) |
+| `DECK_PKG_READONLY` | unset | `1` disables package-modifying endpoints |
 
 > **Security:** there is no authentication. It binds to localhost by default;
 > put it behind a reverse proxy with auth before exposing it.
@@ -61,11 +63,15 @@ The service runs as a dynamic unprivileged user and stores metrics in
 
 - `GET /api/metrics/current` — latest sample plus full system status
 - `GET /api/metrics/history?minutes=30` — samples (default 30, max 10080)
+- `/api/packages/*` — package management (refresh cache, list updates and security fixes,
+  install updates, search, install) for apt, dnf, zypper, pacman, emerge and apk; see
+  [docs/packages-api.md](docs/packages-api.md). Mutating calls need root/sudo, and can be
+  disabled with `DECK_PKG_READONLY=1`.
 
 ## Layout
 
 ```
-src/            Rust backend (main.rs, db.rs, collector.rs)
+src/            Rust backend (main.rs, db.rs, collector.rs, packages.rs, pkgmgr/)
 web/       SvelteKit + Skeleton UI (static SPA export -> web/build)
 db/             default SQLite location in development
 .github/        CI (main/manual: test + release) and PR checks
