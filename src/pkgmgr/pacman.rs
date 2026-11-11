@@ -1,5 +1,6 @@
 //! pacman (Arch and derivatives).
 
+use async_trait::async_trait;
 use super::{
     Cmd, CmdOutput, PackageManager, PkgError, Runner, SearchResult, SecuritySupport, Update,
     require_ok,
@@ -61,6 +62,7 @@ pub fn parse_search(out: &str) -> Vec<SearchResult> {
     v
 }
 
+#[async_trait]
 impl PackageManager for Pacman {
     fn name(&self) -> &'static str {
         "pacman"
@@ -70,16 +72,16 @@ impl PackageManager for Pacman {
         SecuritySupport::Partial
     }
 
-    fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("pacman", &["-Sy"]).privileged().timeout_secs(300))
+    async fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError> {
+        r.run(&Cmd::new("pacman", &["-Sy"]).privileged().timeout_secs(300)).await
     }
 
-    fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError> {
+    async fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError> {
         // Exit 1 means "no updates".
-        let out = require_ok(r.run(&Cmd::new("pacman", &["-Qu"]).ok_codes(&[0, 1]))?, "pacman -Qu")?;
+        let out = require_ok(r.run(&Cmd::new("pacman", &["-Qu"]).ok_codes(&[0, 1])).await?, "pacman -Qu")?;
         let mut updates = parse_qu(&out.stdout);
         // Optional: arch-audit (exit 1 when vulnerable packages exist).
-        match r.run(&Cmd::new("arch-audit", &["-u"]).ok_codes(&[0, 1]).timeout_secs(120)) {
+        match r.run(&Cmd::new("arch-audit", &["-u"]).ok_codes(&[0, 1]).timeout_secs(120)).await {
             Ok(a) if a.success => {
                 let vuln = parse_arch_audit(&a.stdout);
                 for u in &mut updates {
@@ -95,23 +97,23 @@ impl PackageManager for Pacman {
         Ok(updates)
     }
 
-    fn install_updates(&self, r: &dyn Runner, packages: &[String], security_only: bool) -> Result<CmdOutput, PkgError> {
+    async fn install_updates(&self, r: &dyn Runner, packages: &[String], security_only: bool) -> Result<CmdOutput, PkgError> {
         if security_only || !packages.is_empty() {
             return Err(PkgError::Unsupported(
                 "Arch does not support partial upgrades; only a full system upgrade is allowed".into(),
             ));
         }
-        r.run(&Cmd::new("pacman", &["-Su", "--noconfirm"]).privileged().timeout_secs(1800))
+        r.run(&Cmd::new("pacman", &["-Su", "--noconfirm"]).privileged().timeout_secs(1800)).await
     }
 
-    fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError> {
+    async fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError> {
         // Exit 1 means "no match".
-        let out = require_ok(r.run(&Cmd::new("pacman", &["-Ss", query]).ok_codes(&[0, 1]))?, "pacman -Ss")?;
+        let out = require_ok(r.run(&Cmd::new("pacman", &["-Ss", query]).ok_codes(&[0, 1])).await?, "pacman -Ss")?;
         Ok(parse_search(&out.stdout))
     }
 
-    fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("pacman", &["-S", "--noconfirm", "--needed"]).with_args(packages.to_vec()).privileged().timeout_secs(1800))
+    async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
+        r.run(&Cmd::new("pacman", &["-S", "--noconfirm", "--needed"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
     }
 }
 
@@ -147,27 +149,27 @@ mod tests {
         assert_eq!(r[0].description.as_deref(), Some("Lightweight HTTP server"));
     }
 
-    #[test]
-    fn list_flags_security_with_arch_audit() {
+    #[tokio::test]
+    async fn list_flags_security_with_arch_audit() {
         let r = FakeRunner::new().on("pacman -Qu", "openssl 3.2.0-1 -> 3.2.1-1\nvim 9.0-1 -> 9.1-1\n").on("arch-audit -u", AUDIT);
-        let u = Pacman.list_updates(&r).unwrap();
+        let u = Pacman.list_updates(&r).await.unwrap();
         assert!(u[0].security);
         assert!(!u[1].security);
     }
 
-    #[test]
-    fn list_works_without_arch_audit() {
+    #[tokio::test]
+    async fn list_works_without_arch_audit() {
         let r = FakeRunner::new().on("pacman -Qu", "vim 9.0-1 -> 9.1-1\n").missing("arch-audit -u");
-        let u = Pacman.list_updates(&r).unwrap();
+        let u = Pacman.list_updates(&r).await.unwrap();
         assert_eq!(u.len(), 1);
         assert!(!u[0].security);
     }
 
-    #[test]
-    fn partial_upgrades_rejected() {
+    #[tokio::test]
+    async fn partial_upgrades_rejected() {
         let r = FakeRunner::new().on("pacman -Su --noconfirm", "");
-        assert!(matches!(Pacman.install_updates(&r, &["vim".into()], false), Err(PkgError::Unsupported(_))));
-        assert!(matches!(Pacman.install_updates(&r, &[], true), Err(PkgError::Unsupported(_))));
-        assert!(Pacman.install_updates(&r, &[], false).unwrap().success);
+        assert!(matches!(Pacman.install_updates(&r, &["vim".into()], false).await, Err(PkgError::Unsupported(_))));
+        assert!(matches!(Pacman.install_updates(&r, &[], true).await, Err(PkgError::Unsupported(_))));
+        assert!(Pacman.install_updates(&r, &[], false).await.unwrap().success);
     }
 }

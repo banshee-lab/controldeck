@@ -29,7 +29,7 @@ On an unsupported distro every operation returns `501`.
 - Package names are restricted to `[A-Za-z0-9+._:@/=~-]`, ≤128 chars, never starting with `-`
   (max 100 per request). Commands are executed directly, never through a shell.
 - One mutating operation runs at a time (`409` otherwise).
-- Operations time out (refresh 5 min, installs 30 min, Gentoo 2 h) and output is capped at 1 MiB.
+- Operations time out (refresh 5 min, installs 30 min, Gentoo 2 h); returned output is capped at 1 MiB per stream.
 
 ## Conventions
 

@@ -1,8 +1,9 @@
 //! zypper (openSUSE, SLE).
 
+use async_trait::async_trait;
 use super::{
     Cmd, CmdOutput, PackageManager, PkgError, Runner, SearchResult, SecuritySupport, Update,
-    parse_table, require_ok,
+    require_ok,
 };
 use std::collections::HashSet;
 
@@ -14,53 +15,68 @@ fn zypper(args: &[&str]) -> Cmd {
     Cmd::new("zypper", &a)
 }
 
-/// Parses `zypper list-updates` (table: S | Repository | Name | Current Version | Available Version | Arch).
-pub fn parse_list_updates(out: &str) -> Vec<Update> {
-    parse_table(out)
-        .into_iter()
-        .filter_map(|row| {
-            let mut u = Update::new(row.get("Name")?);
-            u.current_version = row.get("Current Version").cloned();
-            u.new_version = row.get("Available Version").cloned();
-            u.repository = row.get("Repository").cloned();
-            Some(u)
-        })
-        .collect()
+fn parse_xml(out: &str) -> Result<roxmltree::Document<'_>, PkgError> {
+    roxmltree::Document::parse(out).map_err(|e| PkgError::Exec(format!("cannot parse zypper XML output: {e}")))
 }
 
-/// Parses `zypper list-patches --category security`. Security fixes are
+fn source_alias(n: roxmltree::Node) -> Option<String> {
+    n.children().find(|c| c.has_tag_name("source")).and_then(|s| s.attribute("alias")).map(String::from)
+}
+
+/// Parses `zypper --xmlout list-updates` (`<update kind="package" name edition edition-old …>`).
+pub fn parse_list_updates(out: &str) -> Result<Vec<Update>, PkgError> {
+    let doc = parse_xml(out)?;
+    Ok(doc
+        .descendants()
+        .filter(|n| n.has_tag_name("update") && n.attribute("kind") == Some("package"))
+        .filter_map(|n| {
+            let mut u = Update::new(n.attribute("name")?);
+            u.current_version = n.attribute("edition-old").map(String::from);
+            u.new_version = n.attribute("edition").map(String::from);
+            u.repository = source_alias(n);
+            Some(u)
+        })
+        .collect())
+}
+
+/// Parses `zypper --xmlout list-patches --category security`. Security fixes are
 /// patches, which cannot be reliably mapped to packages, so each patch is
 /// returned as its own entry (`name` = patch name, `advisory` = summary).
-pub fn parse_security_patches(out: &str) -> Vec<Update> {
-    parse_table(out)
-        .into_iter()
-        .filter_map(|row| {
-            let mut u = Update::new(row.get("Name")?);
-            u.repository = row.get("Repository").cloned();
-            u.advisory = row.get("Summary").cloned();
+pub fn parse_security_patches(out: &str) -> Result<Vec<Update>, PkgError> {
+    let doc = parse_xml(out)?;
+    Ok(doc
+        .descendants()
+        .filter(|n| n.has_tag_name("update") && n.attribute("kind") == Some("patch"))
+        .filter(|n| n.attribute("category") == Some("security"))
+        .filter_map(|n| {
+            let mut u = Update::new(n.attribute("name")?);
+            u.repository = source_alias(n);
+            u.advisory = n.children().find(|c| c.has_tag_name("summary")).and_then(|s| s.text()).map(|t| t.trim().to_string());
             u.security = true;
             Some(u)
         })
-        .collect()
+        .collect())
 }
 
-/// Parses `zypper search` (table: S | Name | Summary | Type), packages only.
-pub fn parse_search(out: &str) -> Vec<SearchResult> {
+/// Parses `zypper --xmlout search` (`<solvable kind="package" name summary …>`).
+pub fn parse_search(out: &str) -> Result<Vec<SearchResult>, PkgError> {
+    let doc = parse_xml(out)?;
     let mut seen = HashSet::new();
-    parse_table(out)
-        .into_iter()
-        .filter(|r| r.get("Type").is_none_or(|t| t == "package"))
-        .filter_map(|r| {
-            let name = r.get("Name")?.clone();
+    Ok(doc
+        .descendants()
+        .filter(|n| n.has_tag_name("solvable") && n.attribute("kind").is_none_or(|k| k == "package"))
+        .filter_map(|n| {
+            let name = n.attribute("name")?.to_string();
             seen.insert(name.clone()).then(|| SearchResult {
                 name,
                 version: None,
-                description: r.get("Summary").cloned(),
+                description: n.attribute("summary").map(String::from),
             })
         })
-        .collect()
+        .collect())
 }
 
+#[async_trait]
 impl PackageManager for Zypper {
     fn name(&self) -> &'static str {
         "zypper"
@@ -70,22 +86,22 @@ impl PackageManager for Zypper {
         SecuritySupport::Full
     }
 
-    fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError> {
-        r.run(&zypper(&["refresh"]).privileged().timeout_secs(300))
+    async fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError> {
+        r.run(&zypper(&["refresh"]).privileged().timeout_secs(300)).await
     }
 
-    fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError> {
-        let out = require_ok(r.run(&Cmd::new("zypper", &["-q", "--non-interactive", "list-updates"]).timeout_secs(300))?, "zypper list-updates")?;
-        let mut updates = parse_list_updates(&out.stdout);
+    async fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError> {
+        let out = require_ok(r.run(&Cmd::new("zypper", &["--xmlout", "--non-interactive", "list-updates"]).timeout_secs(300)).await?, "zypper list-updates")?;
+        let mut updates = parse_list_updates(&out.stdout)?;
         let sec = require_ok(
-            r.run(&Cmd::new("zypper", &["-q", "--non-interactive", "list-patches", "--category", "security"]).timeout_secs(300))?,
+            r.run(&Cmd::new("zypper", &["--xmlout", "--non-interactive", "list-patches", "--category", "security"]).timeout_secs(300)).await?,
             "zypper list-patches",
         )?;
-        updates.extend(parse_security_patches(&sec.stdout));
+        updates.extend(parse_security_patches(&sec.stdout)?);
         Ok(updates)
     }
 
-    fn install_updates(&self, r: &dyn Runner, packages: &[String], security_only: bool) -> Result<CmdOutput, PkgError> {
+    async fn install_updates(&self, r: &dyn Runner, packages: &[String], security_only: bool) -> Result<CmdOutput, PkgError> {
         let cmd = if security_only {
             if !packages.is_empty() {
                 return Err(PkgError::Unsupported("zypper cannot restrict security patches to named packages".into()));
@@ -94,16 +110,16 @@ impl PackageManager for Zypper {
         } else {
             zypper(&["update", "--auto-agree-with-licenses"]).with_args(packages.to_vec())
         };
-        r.run(&cmd.privileged().timeout_secs(1800))
+        r.run(&cmd.privileged().timeout_secs(1800)).await
     }
 
-    fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError> {
-        let out = require_ok(r.run(&Cmd::new("zypper", &["-q", "--non-interactive", "search", query]).timeout_secs(300))?, "zypper search")?;
-        Ok(parse_search(&out.stdout))
+    async fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError> {
+        let out = require_ok(r.run(&Cmd::new("zypper", &["--xmlout", "--non-interactive", "search", query]).timeout_secs(300)).await?, "zypper search")?;
+        parse_search(&out.stdout)
     }
 
-    fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
-        r.run(&zypper(&["install", "--auto-agree-with-licenses"]).with_args(packages.to_vec()).privileged().timeout_secs(1800))
+    async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
+        r.run(&zypper(&["install", "--auto-agree-with-licenses"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
     }
 }
 
@@ -112,23 +128,43 @@ mod tests {
     use super::*;
     use crate::pkgmgr::exec::fake::FakeRunner;
 
-    const LU: &str = "S | Repository | Name | Current Version | Available Version | Arch\n--+------------+------+-----------------+-------------------+-------\nv | Update     | bash | 5.2-1.1         | 5.2-2.1           | x86_64\nv | Update     | curl | 8.0-1.1         | 8.1-1.1           | x86_64\n";
-    const LP: &str = "Repository | Name | Category | Severity | Interactive | Status | Since | Summary\n-----------+------+----------+----------+-------------+--------+-------+--------\nUpdate | openSUSE-SU-2024:1-1 | security | important | --- | needed | 2024-06-01 | Security update for curl\n";
-    const SE: &str = "S | Name | Summary | Type\n--+------+---------+--------\n  | nginx | Web server | package\ni | nginx | Web server | package\n  | nginx | Web server | srcpackage\n  | nginx-extra | More | package\n";
+    const LU: &str = r#"<?xml version='1.0'?>
+<stream><update-status version="0.6"><update-list>
+<update name="bash" kind="package" edition="5.2-2.1" edition-old="5.2-1.1" arch="x86_64"><source url="http://x/update" alias="repo-update"/><description>Shell</description></update>
+<update name="curl" kind="package" edition="8.1-1.1" edition-old="8.0-1.1" arch="x86_64"><source url="http://x/update" alias="repo-update"/></update>
+</update-list></update-status></stream>"#;
+    const LP: &str = r#"<?xml version='1.0'?>
+<stream><update-status version="0.6"><update-list>
+<update name="openSUSE-SU-2024:1-1" kind="patch" edition="1" category="security" severity="important"><summary>Security update for curl</summary><description>d</description><source url="u" alias="repo-update"/></update>
+<update name="openSUSE-RU-2024:2-1" kind="patch" edition="1" category="recommended" severity="low"><summary>Bugfix</summary></update>
+</update-list></update-status></stream>"#;
+    const SE: &str = r#"<?xml version='1.0'?>
+<stream><search-result version="0.0"><solvable-list>
+<solvable status="not-installed" name="nginx" summary="Web server" kind="package"/>
+<solvable status="installed" name="nginx" summary="Web server" kind="package"/>
+<solvable status="not-installed" name="nginx" summary="Web server" kind="srcpackage"/>
+<solvable status="not-installed" name="nginx-extra" summary="More" kind="package"/>
+</solvable-list></search-result></stream>"#;
 
     #[test]
     fn parses_updates() {
-        let u = parse_list_updates(LU);
+        let u = parse_list_updates(LU).unwrap();
         assert_eq!(u.len(), 2);
         assert_eq!(u[0].name, "bash");
         assert_eq!(u[0].current_version.as_deref(), Some("5.2-1.1"));
         assert_eq!(u[0].new_version.as_deref(), Some("5.2-2.1"));
+        assert_eq!(u[0].repository.as_deref(), Some("repo-update"));
         assert!(!u[0].security);
     }
 
     #[test]
+    fn rejects_malformed_xml() {
+        assert!(parse_list_updates("not xml").is_err());
+    }
+
+    #[test]
     fn parses_security_patches() {
-        let p = parse_security_patches(LP);
+        let p = parse_security_patches(LP).unwrap();
         assert_eq!(p.len(), 1);
         assert!(p[0].security);
         assert_eq!(p[0].name, "openSUSE-SU-2024:1-1");
@@ -137,33 +173,33 @@ mod tests {
 
     #[test]
     fn parses_search_dedup_packages_only() {
-        let r = parse_search(SE);
+        let r = parse_search(SE).unwrap();
         assert_eq!(r.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["nginx", "nginx-extra"]);
     }
 
-    #[test]
-    fn list_combines_updates_and_patches() {
+    #[tokio::test]
+    async fn list_combines_updates_and_patches() {
         let r = FakeRunner::new()
-            .on("zypper -q --non-interactive list-updates", LU)
-            .on("zypper -q --non-interactive list-patches --category security", LP);
-        let u = Zypper.list_updates(&r).unwrap();
+            .on("zypper --xmlout --non-interactive list-updates", LU)
+            .on("zypper --xmlout --non-interactive list-patches --category security", LP);
+        let u = Zypper.list_updates(&r).await.unwrap();
         assert_eq!(u.len(), 3);
         assert_eq!(u.iter().filter(|x| x.security).count(), 1);
     }
 
-    #[test]
-    fn commands() {
+    #[tokio::test]
+    async fn commands() {
         let r = FakeRunner::new()
             .on("zypper --non-interactive refresh", "")
             .on("zypper --non-interactive update --auto-agree-with-licenses", "")
             .on("zypper --non-interactive update --auto-agree-with-licenses bash", "")
             .on("zypper --non-interactive patch --category security --auto-agree-with-licenses", "")
             .on("zypper --non-interactive install --auto-agree-with-licenses git", "");
-        Zypper.refresh(&r).unwrap();
-        Zypper.install_updates(&r, &[], false).unwrap();
-        Zypper.install_updates(&r, &["bash".into()], false).unwrap();
-        Zypper.install_updates(&r, &[], true).unwrap();
-        Zypper.install(&r, &["git".into()]).unwrap();
-        assert!(matches!(Zypper.install_updates(&r, &["bash".into()], true), Err(PkgError::Unsupported(_))));
+        Zypper.refresh(&r).await.unwrap();
+        Zypper.install_updates(&r, &[], false).await.unwrap();
+        Zypper.install_updates(&r, &["bash".into()], false).await.unwrap();
+        Zypper.install_updates(&r, &[], true).await.unwrap();
+        Zypper.install(&r, &["git".into()]).await.unwrap();
+        assert!(matches!(Zypper.install_updates(&r, &["bash".into()], true).await, Err(PkgError::Unsupported(_))));
     }
 }

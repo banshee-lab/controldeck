@@ -1,5 +1,6 @@
 //! apt (Debian, Ubuntu and derivatives).
 
+use async_trait::async_trait;
 use super::{
     Cmd, CmdOutput, PackageManager, PkgError, Runner, SearchResult, SecuritySupport, Update,
     require_ok, security_names,
@@ -55,6 +56,7 @@ pub fn parse_search(out: &str) -> Vec<SearchResult> {
         .collect()
 }
 
+#[async_trait]
 impl PackageManager for Apt {
     fn name(&self) -> &'static str {
         "apt"
@@ -64,18 +66,18 @@ impl PackageManager for Apt {
         SecuritySupport::Full
     }
 
-    fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError> {
-        r.run(&apt_get(&["update"]).timeout_secs(300))
+    async fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError> {
+        r.run(&apt_get(&["update"]).timeout_secs(300)).await
     }
 
-    fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError> {
-        let out = require_ok(r.run(&Cmd::new("apt", &["list", "--upgradable"]))?, "apt list --upgradable")?;
+    async fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError> {
+        let out = require_ok(r.run(&Cmd::new("apt", &["list", "--upgradable"])).await?, "apt list --upgradable")?;
         Ok(parse_upgradable(&out.stdout))
     }
 
-    fn install_updates(&self, r: &dyn Runner, packages: &[String], security_only: bool) -> Result<CmdOutput, PkgError> {
+    async fn install_updates(&self, r: &dyn Runner, packages: &[String], security_only: bool) -> Result<CmdOutput, PkgError> {
         let names: Vec<String> = if security_only {
-            let updates = self.list_updates(r)?;
+            let updates = self.list_updates(r).await?;
             let names = security_names(&updates, packages);
             if names.is_empty() {
                 return Ok(CmdOutput { success: true, exit_code: Some(0), stdout: "no security updates to install\n".into(), ..Default::default() });
@@ -91,17 +93,17 @@ impl PackageManager for Apt {
                 .with_args(CONF_OPTS.map(String::from))
                 .with_args(names)
         };
-        r.run(&cmd.timeout_secs(1800))
+        r.run(&cmd.timeout_secs(1800)).await
     }
 
-    fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError> {
-        let out = require_ok(r.run(&Cmd::new("apt-cache", &["search", query]))?, "apt-cache search")?;
+    async fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError> {
+        let out = require_ok(r.run(&Cmd::new("apt-cache", &["search", query])).await?, "apt-cache search")?;
         Ok(parse_search(&out.stdout))
     }
 
-    fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
+    async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
         let cmd = apt_get(&["install", "-y"]).with_args(CONF_OPTS.map(String::from)).with_args(packages.to_vec());
-        r.run(&cmd.timeout_secs(1800))
+        r.run(&cmd.timeout_secs(1800)).await
     }
 }
 
@@ -136,38 +138,38 @@ openssl/stable-security 3.0.15-1~deb12u1 amd64 [upgradable from: 3.0.14-1~deb12u
         assert_eq!(r[1].description.as_deref(), Some("common files - shared"));
     }
 
-    #[test]
-    fn install_builds_noninteractive_command() {
+    #[tokio::test]
+    async fn install_builds_noninteractive_command() {
         let r = FakeRunner::new().on("apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold curl git", "ok");
-        let o = Apt.install(&r, &["curl".into(), "git".into()]).unwrap();
+        let o = Apt.install(&r, &["curl".into(), "git".into()]).await.unwrap();
         assert!(o.success);
         let calls = r.calls.lock().unwrap();
         assert!(calls[0].privileged);
         assert!(calls[0].env.contains(&("DEBIAN_FRONTEND", "noninteractive")));
     }
 
-    #[test]
-    fn upgrade_all_and_selected() {
+    #[tokio::test]
+    async fn upgrade_all_and_selected() {
         let r = FakeRunner::new()
             .on("apt-get upgrade -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold", "")
             .on("apt-get install -y --only-upgrade -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold vim", "");
-        Apt.install_updates(&r, &[], false).unwrap();
-        Apt.install_updates(&r, &["vim".into()], false).unwrap();
+        Apt.install_updates(&r, &[], false).await.unwrap();
+        Apt.install_updates(&r, &["vim".into()], false).await.unwrap();
         assert_eq!(r.executed().len(), 2);
     }
 
-    #[test]
-    fn security_only_installs_just_security_packages() {
+    #[tokio::test]
+    async fn security_only_installs_just_security_packages() {
         let r = FakeRunner::new()
             .on("apt list --upgradable", UPGRADABLE)
             .on("apt-get install -y --only-upgrade -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold curl openssl", "");
-        assert!(Apt.install_updates(&r, &[], true).unwrap().success);
+        assert!(Apt.install_updates(&r, &[], true).await.unwrap().success);
     }
 
-    #[test]
-    fn security_only_with_nothing_pending_is_a_noop() {
+    #[tokio::test]
+    async fn security_only_with_nothing_pending_is_a_noop() {
         let r = FakeRunner::new().on("apt list --upgradable", "Listing...\n");
-        let o = Apt.install_updates(&r, &[], true).unwrap();
+        let o = Apt.install_updates(&r, &[], true).await.unwrap();
         assert!(o.success);
         assert_eq!(r.executed(), vec!["apt list --upgradable"]);
     }

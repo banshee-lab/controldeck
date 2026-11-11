@@ -6,15 +6,14 @@
 
 use super::PkgError;
 use serde::Serialize;
+use async_trait::async_trait;
 use std::{
-    io::Read,
-    os::unix::process::CommandExt,
-    process::{Command, Stdio},
-    thread,
+    process::Stdio,
     time::{Duration, Instant},
 };
+use tokio::process::Command;
 
-/// Maximum bytes of stdout / stderr kept per command.
+/// Maximum bytes of stdout / stderr returned per command.
 const MAX_OUTPUT: usize = 1024 * 1024;
 const PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
@@ -96,8 +95,9 @@ impl CmdOutput {
     }
 }
 
+#[async_trait]
 pub trait Runner: Send + Sync {
-    fn run(&self, cmd: &Cmd) -> Result<CmdOutput, PkgError>;
+    async fn run(&self, cmd: &Cmd) -> Result<CmdOutput, PkgError>;
 }
 
 fn is_root() -> bool {
@@ -130,82 +130,68 @@ pub fn build_argv(cmd: &Cmd, root: bool) -> (String, Vec<String>) {
     }
 }
 
-fn drain<R: Read + Send + 'static>(mut r: R) -> thread::JoinHandle<Vec<u8>> {
-    thread::spawn(move || {
-        let mut buf = Vec::new();
-        let mut chunk = [0u8; 8192];
-        loop {
-            match r.read(&mut chunk) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if buf.len() < MAX_OUTPUT {
-                        let take = n.min(MAX_OUTPUT - buf.len());
-                        buf.extend_from_slice(&chunk[..take]);
-                    }
-                }
-            }
-        }
-        buf
-    })
-}
-
 /// Runs commands on the local system.
 pub struct SystemRunner;
 
+#[async_trait]
 impl Runner for SystemRunner {
-    fn run(&self, cmd: &Cmd) -> Result<CmdOutput, PkgError> {
+    async fn run(&self, cmd: &Cmd) -> Result<CmdOutput, PkgError> {
         let (program, args) = build_argv(cmd, is_root());
         let mut c = Command::new(&program);
         c.args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .kill_on_drop(true)
             .process_group(0);
         for (k, v) in envs(cmd) {
             c.env(k, v);
         }
 
         let start = Instant::now();
-        let mut child = c.spawn().map_err(|e| {
+        let child = c.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 PkgError::ToolMissing(program.clone())
             } else {
                 PkgError::Exec(format!("cannot run {program}: {e}"))
             }
         })?;
-        let out = drain(child.stdout.take().expect("stdout piped"));
-        let err = drain(child.stderr.take().expect("stderr piped"));
+        let pid = child.id();
 
-        let mut timed_out = false;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(st)) => break Some(st),
-                Ok(None) if start.elapsed() >= cmd.timeout => {
-                    timed_out = true;
-                    // Best effort: kill the whole process group.
-                    // SAFETY: plain syscall on the pid of our own child.
-                    unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break None;
-                }
-                Ok(None) => thread::sleep(Duration::from_millis(50)),
-                Err(e) => return Err(PkgError::Exec(format!("wait failed: {e}"))),
+        match tokio::time::timeout(cmd.timeout, child.wait_with_output()).await {
+            Ok(Ok(o)) => {
+                let exit_code = o.status.code();
+                Ok(CmdOutput {
+                    success: exit_code.is_some_and(|c| cmd.ok_codes.contains(&c)),
+                    exit_code,
+                    timed_out: false,
+                    stdout: lossy_capped(&o.stdout),
+                    stderr: lossy_capped(&o.stderr),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                })
             }
-        };
-
-        let stdout = String::from_utf8_lossy(&out.join().unwrap_or_default()).into_owned();
-        let stderr = String::from_utf8_lossy(&err.join().unwrap_or_default()).into_owned();
-        let exit_code = status.and_then(|s| s.code());
-        Ok(CmdOutput {
-            success: !timed_out && exit_code.is_some_and(|c| cmd.ok_codes.contains(&c)),
-            exit_code,
-            timed_out,
-            stdout,
-            stderr,
-            duration_ms: start.elapsed().as_millis() as u64,
-        })
+            Ok(Err(e)) => Err(PkgError::Exec(format!("wait failed: {e}"))),
+            Err(_) => {
+                // The future (and the child) is dropped; kill_on_drop kills the
+                // child, also take down its process group (e.g. sudo -> apt).
+                if let Some(pid) = pid {
+                    // SAFETY: plain syscall on the process group of our own child.
+                    unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+                }
+                Ok(CmdOutput {
+                    success: false,
+                    exit_code: None,
+                    timed_out: true,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    ..Default::default()
+                })
+            }
+        }
     }
+}
+
+fn lossy_capped(b: &[u8]) -> String {
+    String::from_utf8_lossy(&b[..b.len().min(MAX_OUTPUT)]).into_owned()
 }
 
 /// Scripted runner for unit tests: responses are matched on the exact
@@ -246,8 +232,9 @@ pub mod fake {
         }
     }
 
+    #[async_trait]
     impl Runner for FakeRunner {
-        fn run(&self, cmd: &Cmd) -> Result<CmdOutput, PkgError> {
+        async fn run(&self, cmd: &Cmd) -> Result<CmdOutput, PkgError> {
             self.calls.lock().unwrap().push(cmd.clone());
             match self.responses.get(&cmd.display()) {
                 Some(Ok(o)) => Ok(o.clone()),
@@ -287,28 +274,28 @@ mod tests {
         assert_eq!(build_argv(&c, false).0, "apt");
     }
 
-    #[test]
-    fn system_runner_captures_output_and_codes() {
+    #[tokio::test]
+    async fn system_runner_captures_output_and_codes() {
         let r = SystemRunner;
-        let o = r.run(&Cmd::new("sh", &["-c", "echo out; echo err >&2; exit 3"]).ok_codes(&[3])).unwrap();
+        let o = r.run(&Cmd::new("sh", &["-c", "echo out; echo err >&2; exit 3"]).ok_codes(&[3])).await.unwrap();
         assert!(o.success);
         assert_eq!(o.exit_code, Some(3));
         assert_eq!(o.stdout.trim(), "out");
         assert_eq!(o.stderr.trim(), "err");
-        let o = r.run(&Cmd::new("sh", &["-c", "exit 1"])).unwrap();
+        let o = r.run(&Cmd::new("sh", &["-c", "exit 1"])).await.unwrap();
         assert!(!o.success);
     }
 
-    #[test]
-    fn system_runner_times_out() {
-        let o = SystemRunner.run(&Cmd::new("sleep", &["5"]).timeout_secs(1)).unwrap();
+    #[tokio::test]
+    async fn system_runner_times_out() {
+        let o = SystemRunner.run(&Cmd::new("sleep", &["5"]).timeout_secs(1)).await.unwrap();
         assert!(o.timed_out);
         assert!(!o.success);
     }
 
-    #[test]
-    fn missing_binary_is_tool_missing() {
-        let e = SystemRunner.run(&Cmd::new("definitely-not-a-real-binary", &[])).unwrap_err();
+    #[tokio::test]
+    async fn missing_binary_is_tool_missing() {
+        let e = SystemRunner.run(&Cmd::new("definitely-not-a-real-binary", &[])).await.unwrap_err();
         assert!(matches!(e, PkgError::ToolMissing(_)));
     }
 }

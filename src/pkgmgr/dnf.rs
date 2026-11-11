@@ -1,5 +1,6 @@
 //! dnf / rpm (Fedora, RHEL and derivatives).
 
+use async_trait::async_trait;
 use super::{
     Cmd, CmdOutput, PackageManager, PkgError, Runner, SearchResult, SecuritySupport, Update,
     require_ok,
@@ -89,6 +90,7 @@ pub fn parse_search(out: &str) -> Vec<SearchResult> {
         .collect()
 }
 
+#[async_trait]
 impl PackageManager for Dnf {
     fn name(&self) -> &'static str {
         "dnf"
@@ -98,14 +100,14 @@ impl PackageManager for Dnf {
         SecuritySupport::Full
     }
 
-    fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("dnf", &["-y", "makecache", "--refresh"]).privileged().timeout_secs(300))
+    async fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError> {
+        r.run(&Cmd::new("dnf", &["-y", "makecache", "--refresh"]).privileged().timeout_secs(300)).await
     }
 
-    fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError> {
+    async fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError> {
         // check-update exits 100 when updates are available.
         let out = require_ok(
-            r.run(&Cmd::new("dnf", &["-q", "check-update"]).ok_codes(&[0, 100]).timeout_secs(300))?,
+            r.run(&Cmd::new("dnf", &["-q", "check-update"]).ok_codes(&[0, 100]).timeout_secs(300)).await?,
             "dnf check-update",
         )?;
         let mut updates = parse_check_update(&out.stdout);
@@ -113,7 +115,7 @@ impl PackageManager for Dnf {
             return Ok(updates);
         }
         let info = require_ok(
-            r.run(&Cmd::new("dnf", &["-q", "updateinfo", "list", "--security"]).timeout_secs(300))?,
+            r.run(&Cmd::new("dnf", &["-q", "updateinfo", "list", "--security"]).timeout_secs(300)).await?,
             "dnf updateinfo",
         )?;
         let sec = parse_updateinfo(&info.stdout);
@@ -126,21 +128,21 @@ impl PackageManager for Dnf {
         Ok(updates)
     }
 
-    fn install_updates(&self, r: &dyn Runner, packages: &[String], security_only: bool) -> Result<CmdOutput, PkgError> {
+    async fn install_updates(&self, r: &dyn Runner, packages: &[String], security_only: bool) -> Result<CmdOutput, PkgError> {
         let mut args = vec!["-y", "upgrade"];
         if security_only {
             args.push("--security");
         }
-        r.run(&Cmd::new("dnf", &args).with_args(packages.to_vec()).privileged().timeout_secs(1800))
+        r.run(&Cmd::new("dnf", &args).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
     }
 
-    fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError> {
-        let out = require_ok(r.run(&Cmd::new("dnf", &["-q", "search", query]).timeout_secs(300))?, "dnf search")?;
+    async fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError> {
+        let out = require_ok(r.run(&Cmd::new("dnf", &["-q", "search", query]).timeout_secs(300)).await?, "dnf search")?;
         Ok(parse_search(&out.stdout))
     }
 
-    fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("dnf", &["-y", "install"]).with_args(packages.to_vec()).privileged().timeout_secs(1800))
+    async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
+        r.run(&Cmd::new("dnf", &["-y", "install"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
     }
 }
 
@@ -170,31 +172,31 @@ mod tests {
         }
     }
 
-    #[test]
-    fn list_updates_flags_security() {
+    #[tokio::test]
+    async fn list_updates_flags_security() {
         let r = FakeRunner::new()
             .on("dnf -q check-update", CHECK)
             .on("dnf -q updateinfo list --security", INFO_DNF4);
-        let u = Dnf.list_updates(&r).unwrap();
+        let u = Dnf.list_updates(&r).await.unwrap();
         assert!(u[0].security);
         assert_eq!(u[0].advisory.as_deref(), Some("FEDORA-2024-abc123"));
         assert!(!u[1].security);
     }
 
-    #[test]
-    fn no_updates_skips_updateinfo() {
+    #[tokio::test]
+    async fn no_updates_skips_updateinfo() {
         let r = FakeRunner::new().on("dnf -q check-update", "");
-        assert!(Dnf.list_updates(&r).unwrap().is_empty());
+        assert!(Dnf.list_updates(&r).await.unwrap().is_empty());
         assert_eq!(r.executed().len(), 1);
     }
 
-    #[test]
-    fn check_update_accepts_exit_100() {
+    #[tokio::test]
+    async fn check_update_accepts_exit_100() {
         let r = FakeRunner::new().on_output(
             "dnf -q check-update",
             CmdOutput { success: true, exit_code: Some(100), stdout: String::new(), ..Default::default() },
         );
-        assert!(Dnf.list_updates(&r).is_ok());
+        assert!(Dnf.list_updates(&r).await.is_ok());
         assert_eq!(r.calls.lock().unwrap()[0].ok_codes, vec![0, 100]);
     }
 
@@ -205,17 +207,17 @@ mod tests {
         assert_eq!(r[0].name, "nginx");
     }
 
-    #[test]
-    fn upgrade_commands() {
+    #[tokio::test]
+    async fn upgrade_commands() {
         let r = FakeRunner::new()
             .on("dnf -y upgrade", "")
             .on("dnf -y upgrade --security", "")
             .on("dnf -y upgrade vim", "")
             .on("dnf -y install git", "");
-        Dnf.install_updates(&r, &[], false).unwrap();
-        Dnf.install_updates(&r, &[], true).unwrap();
-        Dnf.install_updates(&r, &["vim".into()], false).unwrap();
-        Dnf.install(&r, &["git".into()]).unwrap();
+        Dnf.install_updates(&r, &[], false).await.unwrap();
+        Dnf.install_updates(&r, &[], true).await.unwrap();
+        Dnf.install_updates(&r, &["vim".into()], false).await.unwrap();
+        Dnf.install(&r, &["git".into()]).await.unwrap();
         assert!(r.calls.lock().unwrap().iter().all(|c| c.privileged));
     }
 }

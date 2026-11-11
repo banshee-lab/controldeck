@@ -9,7 +9,8 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex, TryLockError};
+use std::sync::Arc;
+use tokio::sync::{Mutex, MutexGuard};
 
 pub struct PackageService {
     distro: String,
@@ -74,42 +75,15 @@ impl PackageService {
         })
     }
 
-    /// Runs `f` on a blocking thread, holding the mutation lock.
-    async fn mutate<T, F>(self: &Arc<Self>, f: F) -> Result<T, ApiError>
-    where
-        T: Send + 'static,
-        F: FnOnce(Arc<dyn PackageManager>, &dyn Runner) -> Result<T, PkgError> + Send + 'static,
-    {
+    /// Gate for mutating operations: rejects in read-only mode and when another
+    /// mutation is running. Hold the guard for the duration of the operation.
+    fn begin_mutation(&self) -> Result<MutexGuard<'_, ()>, ApiError> {
         if self.read_only {
             return Err(ApiError(StatusCode::FORBIDDEN, "package modifications are disabled (DECK_PKG_READONLY)".into()));
         }
-        let m = self.manager()?;
-        let svc = self.clone();
-        tokio::task::spawn_blocking(move || {
-            let _guard = match svc.op_lock.try_lock() {
-                Ok(g) => g,
-                Err(TryLockError::Poisoned(e)) => e.into_inner(),
-                Err(TryLockError::WouldBlock) => {
-                    return Err(ApiError(StatusCode::CONFLICT, "another package operation is in progress".into()));
-                }
-            };
-            f(m, svc.runner.as_ref()).map_err(ApiError::from)
-        })
-        .await
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    }
-
-    /// Runs a read-only `f` on a blocking thread.
-    async fn read<T, F>(self: &Arc<Self>, f: F) -> Result<T, ApiError>
-    where
-        T: Send + 'static,
-        F: FnOnce(Arc<dyn PackageManager>, &dyn Runner) -> Result<T, PkgError> + Send + 'static,
-    {
-        let m = self.manager()?;
-        let svc = self.clone();
-        tokio::task::spawn_blocking(move || f(m, svc.runner.as_ref()).map_err(ApiError::from))
-            .await
-            .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        self.op_lock
+            .try_lock()
+            .map_err(|_| ApiError(StatusCode::CONFLICT, "another package operation is in progress".into()))
     }
 }
 
@@ -179,13 +153,14 @@ async fn info(State(svc): State<Arc<PackageService>>) -> Json<Info> {
 
 async fn refresh(State(svc): State<Arc<PackageService>>) -> ApiResult<OpResponse> {
     let m = svc.manager()?;
-    let output = svc.mutate(|m, r| m.refresh(r)).await?;
+    let _guard = svc.begin_mutation()?;
+    let output = m.refresh(svc.runner.as_ref()).await?;
     Ok(Json(OpResponse { manager: m.name(), output }))
 }
 
 async fn list_updates(State(svc): State<Arc<PackageService>>, Query(q): Query<UpdatesQuery>) -> ApiResult<UpdatesResponse> {
     let m = svc.manager()?;
-    let mut updates = svc.read(|m, r| m.list_updates(r)).await?;
+    let mut updates = m.list_updates(svc.runner.as_ref()).await?;
     if q.security {
         updates.retain(|u| u.security);
     }
@@ -195,7 +170,8 @@ async fn list_updates(State(svc): State<Arc<PackageService>>, Query(q): Query<Up
 async fn install_updates(State(svc): State<Arc<PackageService>>, Json(body): Json<InstallUpdatesBody>) -> ApiResult<OpResponse> {
     pkgmgr::validate_packages(&body.packages)?;
     let m = svc.manager()?;
-    let output = svc.mutate(move |m, r| m.install_updates(r, &body.packages, body.security_only)).await?;
+    let _guard = svc.begin_mutation()?;
+    let output = m.install_updates(svc.runner.as_ref(), &body.packages, body.security_only).await?;
     Ok(Json(OpResponse { manager: m.name(), output }))
 }
 
@@ -203,8 +179,7 @@ async fn search(State(svc): State<Arc<PackageService>>, Query(q): Query<SearchQu
     pkgmgr::validate_query(&q.q)?;
     let m = svc.manager()?;
     let query = q.q.trim().to_string();
-    let qc = query.clone();
-    let results = svc.read(move |m, r| m.search(r, &qc)).await?;
+    let results = m.search(svc.runner.as_ref(), &query).await?;
     Ok(Json(SearchResponse { manager: m.name(), query, count: results.len(), results }))
 }
 
@@ -214,7 +189,8 @@ async fn install(State(svc): State<Arc<PackageService>>, Json(body): Json<Instal
     }
     pkgmgr::validate_packages(&body.packages)?;
     let m = svc.manager()?;
-    let output = svc.mutate(move |m, r| m.install(r, &body.packages)).await?;
+    let _guard = svc.begin_mutation()?;
+    let output = m.install(svc.runner.as_ref(), &body.packages).await?;
     Ok(Json(OpResponse { manager: m.name(), output }))
 }
 
@@ -358,7 +334,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_mutation_is_409() {
         let s = svc(FakeRunner::new().on("apt-get update", ""), Some(ManagerKind::Apt), false);
-        let _held = s.op_lock.lock().unwrap();
+        let _held = s.op_lock.lock().await;
         let (st, _) = call(s.clone(), "POST", "/api/packages/refresh", None).await;
         assert_eq!(st, StatusCode::CONFLICT);
     }

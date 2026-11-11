@@ -17,8 +17,9 @@ pub mod exec;
 mod pacman;
 mod zypper;
 
+use async_trait::async_trait;
 use serde::Serialize;
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{fmt, sync::Arc};
 
 pub use exec::{Cmd, CmdOutput, Runner, SystemRunner};
 
@@ -94,23 +95,24 @@ impl fmt::Display for PkgError {
 impl std::error::Error for PkgError {}
 
 /// The operations every supported package manager provides.
+#[async_trait]
 pub trait PackageManager: Send + Sync {
     fn name(&self) -> &'static str;
     fn security_support(&self) -> SecuritySupport;
     /// Refresh the package metadata cache (e.g. `apt-get update`).
-    fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError>;
+    async fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError>;
     /// Updates available from the *current* cache (run [`refresh`](Self::refresh) first).
-    fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError>;
+    async fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError>;
     /// Install updates: all of them when `packages` is empty, otherwise only
     /// those named. `security_only` restricts to security fixes.
-    fn install_updates(
+    async fn install_updates(
         &self,
         r: &dyn Runner,
         packages: &[String],
         security_only: bool,
     ) -> Result<CmdOutput, PkgError>;
-    fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError>;
-    fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError>;
+    async fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError>;
+    async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -287,28 +289,6 @@ pub(crate) fn split_name_version(s: &str) -> (String, Option<String>) {
     }
 }
 
-/// Parses a zypper-style `a | b | c` table into one map per row keyed by the
-/// header names. Separator rows (`--+--`) are skipped.
-pub(crate) fn parse_table(out: &str) -> Vec<HashMap<String, String>> {
-    let mut header: Option<Vec<String>> = None;
-    let mut rows = Vec::new();
-    for line in out.lines() {
-        if !line.contains('|') {
-            continue;
-        }
-        let cells: Vec<String> = line.split('|').map(|c| c.trim().to_string()).collect();
-        match &header {
-            None => header = Some(cells),
-            Some(h) => {
-                if cells.len() == h.len() {
-                    rows.push(h.iter().cloned().zip(cells).collect());
-                }
-            }
-        }
-    }
-    rows
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,15 +369,6 @@ mod tests {
         assert_eq!(split_name_version("gtk+3.0-3.24.1-r0"), ("gtk+3.0".into(), Some("3.24.1-r0".into())));
         assert_eq!(split_name_version("glibc-2.38-r10"), ("glibc".into(), Some("2.38-r10".into())));
         assert_eq!(split_name_version("nover"), ("nover".into(), None));
-    }
-
-    #[test]
-    fn parses_tables() {
-        let t = "S | Name | Summary\n--+------+--------\nv | bash | Shell\n  | zsh  | Other shell\n";
-        let rows = parse_table(t);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0]["Name"], "bash");
-        assert_eq!(rows[1]["Summary"], "Other shell");
     }
 
     #[test]

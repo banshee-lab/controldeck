@@ -1,5 +1,6 @@
 //! emerge / Portage (Gentoo).
 
+use async_trait::async_trait;
 use super::{
     Cmd, CmdOutput, PackageManager, PkgError, Runner, SearchResult, SecuritySupport, Update,
     require_ok, split_name_version,
@@ -80,6 +81,7 @@ pub fn parse_search(out: &str) -> Vec<SearchResult> {
     v
 }
 
+#[async_trait]
 impl PackageManager for Emerge {
     fn name(&self) -> &'static str {
         "emerge"
@@ -90,17 +92,17 @@ impl PackageManager for Emerge {
         SecuritySupport::Partial
     }
 
-    fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("emerge", &["--sync", "--quiet"]).privileged().timeout_secs(1800))
+    async fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError> {
+        r.run(&Cmd::new("emerge", &["--sync", "--quiet"]).privileged().timeout_secs(1800)).await
     }
 
-    fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError> {
+    async fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError> {
         let out = require_ok(
-            r.run(&Cmd::new("emerge", &["--pretend", "--update", "--deep", "--newuse", "--color", "n", "--nospinner", "@world"]).timeout_secs(600))?,
+            r.run(&Cmd::new("emerge", &["--pretend", "--update", "--deep", "--newuse", "--color", "n", "--nospinner", "@world"]).timeout_secs(600)).await?,
             "emerge --pretend",
         )?;
         let mut updates = parse_pretend(&out.stdout);
-        match r.run(&Cmd::new("glsa-check", &["-l", "affected"]).timeout_secs(300)) {
+        match r.run(&Cmd::new("glsa-check", &["-l", "affected"]).timeout_secs(300)).await {
             Ok(g) if g.success => {
                 let glsa = parse_glsa(&g.stdout);
                 // Updates carry bare names; GLSA atoms are category/package.
@@ -118,7 +120,7 @@ impl PackageManager for Emerge {
         Ok(updates)
     }
 
-    fn install_updates(&self, r: &dyn Runner, packages: &[String], security_only: bool) -> Result<CmdOutput, PkgError> {
+    async fn install_updates(&self, r: &dyn Runner, packages: &[String], security_only: bool) -> Result<CmdOutput, PkgError> {
         if security_only {
             return Err(PkgError::Unsupported("emerge cannot restrict an update to security fixes".into()));
         }
@@ -127,16 +129,16 @@ impl PackageManager for Emerge {
         } else {
             Cmd::new("emerge", &["--update", "--newuse", "--color", "n", "--nospinner"]).with_args(packages.to_vec())
         };
-        r.run(&cmd.privileged().timeout_secs(7200))
+        r.run(&cmd.privileged().timeout_secs(7200)).await
     }
 
-    fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError> {
-        let out = require_ok(r.run(&Cmd::new("emerge", &["--search", "--color", "n", "--nospinner", query]).timeout_secs(300))?, "emerge --search")?;
+    async fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError> {
+        let out = require_ok(r.run(&Cmd::new("emerge", &["--search", "--color", "n", "--nospinner", query]).timeout_secs(300)).await?, "emerge --search")?;
         Ok(parse_search(&out.stdout))
     }
 
-    fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("emerge", &["--noreplace", "--color", "n", "--nospinner"]).with_args(packages.to_vec()).privileged().timeout_secs(7200))
+    async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
+        r.run(&Cmd::new("emerge", &["--noreplace", "--color", "n", "--nospinner"]).with_args(packages.to_vec()).privileged().timeout_secs(7200)).await
     }
 }
 
@@ -175,36 +177,36 @@ mod tests {
         assert_eq!(r[0].description.as_deref(), Some("Vim, an improved vi-style text editor"));
     }
 
-    #[test]
-    fn list_flags_glsa_matches() {
+    #[tokio::test]
+    async fn list_flags_glsa_matches() {
         let r = FakeRunner::new()
             .on("emerge --pretend --update --deep --newuse --color n --nospinner @world", PRETEND)
             .on("glsa-check -l affected", GLSA);
-        let u = Emerge.list_updates(&r).unwrap();
+        let u = Emerge.list_updates(&r).await.unwrap();
         assert!(!u[0].security);
         assert!(u[1].security);
         assert_eq!(u[1].advisory.as_deref(), Some("202401-01"));
     }
 
-    #[test]
-    fn list_works_without_glsa_check() {
+    #[tokio::test]
+    async fn list_works_without_glsa_check() {
         let r = FakeRunner::new()
             .on("emerge --pretend --update --deep --newuse --color n --nospinner @world", PRETEND)
             .missing("glsa-check -l affected");
-        assert_eq!(Emerge.list_updates(&r).unwrap().len(), 2);
+        assert_eq!(Emerge.list_updates(&r).await.unwrap().len(), 2);
     }
 
-    #[test]
-    fn commands() {
+    #[tokio::test]
+    async fn commands() {
         let r = FakeRunner::new()
             .on("emerge --sync --quiet", "")
             .on("emerge --update --deep --newuse --color n --nospinner @world", "")
             .on("emerge --update --newuse --color n --nospinner app-editors/vim", "")
             .on("emerge --noreplace --color n --nospinner app-editors/vim", "");
-        Emerge.refresh(&r).unwrap();
-        Emerge.install_updates(&r, &[], false).unwrap();
-        Emerge.install_updates(&r, &["app-editors/vim".into()], false).unwrap();
-        Emerge.install(&r, &["app-editors/vim".into()]).unwrap();
-        assert!(matches!(Emerge.install_updates(&r, &[], true), Err(PkgError::Unsupported(_))));
+        Emerge.refresh(&r).await.unwrap();
+        Emerge.install_updates(&r, &[], false).await.unwrap();
+        Emerge.install_updates(&r, &["app-editors/vim".into()], false).await.unwrap();
+        Emerge.install(&r, &["app-editors/vim".into()]).await.unwrap();
+        assert!(matches!(Emerge.install_updates(&r, &[], true).await, Err(PkgError::Unsupported(_))));
     }
 }

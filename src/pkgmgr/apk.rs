@@ -1,5 +1,6 @@
 //! apk (Alpine).
 
+use async_trait::async_trait;
 use super::{
     Cmd, CmdOutput, PackageManager, PkgError, Runner, SearchResult, SecuritySupport, Update,
     require_ok, split_name_version,
@@ -43,6 +44,7 @@ pub fn parse_search(out: &str) -> Vec<SearchResult> {
         .collect()
 }
 
+#[async_trait]
 impl PackageManager for Apk {
     fn name(&self) -> &'static str {
         "apk"
@@ -53,16 +55,16 @@ impl PackageManager for Apk {
         SecuritySupport::Unavailable
     }
 
-    fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("apk", &["update"]).privileged().timeout_secs(300))
+    async fn refresh(&self, r: &dyn Runner) -> Result<CmdOutput, PkgError> {
+        r.run(&Cmd::new("apk", &["update"]).privileged().timeout_secs(300)).await
     }
 
-    fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError> {
-        let out = require_ok(r.run(&Cmd::new("apk", &["version", "-l", "<"]))?, "apk version")?;
+    async fn list_updates(&self, r: &dyn Runner) -> Result<Vec<Update>, PkgError> {
+        let out = require_ok(r.run(&Cmd::new("apk", &["version", "-l", "<"])).await?, "apk version")?;
         Ok(parse_version_list(&out.stdout))
     }
 
-    fn install_updates(&self, r: &dyn Runner, packages: &[String], security_only: bool) -> Result<CmdOutput, PkgError> {
+    async fn install_updates(&self, r: &dyn Runner, packages: &[String], security_only: bool) -> Result<CmdOutput, PkgError> {
         if security_only {
             return Err(PkgError::Unsupported("apk cannot identify security updates".into()));
         }
@@ -71,16 +73,16 @@ impl PackageManager for Apk {
         } else {
             Cmd::new("apk", &["add", "-u"]).with_args(packages.to_vec())
         };
-        r.run(&cmd.privileged().timeout_secs(1800))
+        r.run(&cmd.privileged().timeout_secs(1800)).await
     }
 
-    fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError> {
-        let out = require_ok(r.run(&Cmd::new("apk", &["search", "-v", "-d", query]))?, "apk search")?;
+    async fn search(&self, r: &dyn Runner, query: &str) -> Result<Vec<SearchResult>, PkgError> {
+        let out = require_ok(r.run(&Cmd::new("apk", &["search", "-v", "-d", query])).await?, "apk search")?;
         Ok(parse_search(&out.stdout))
     }
 
-    fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
-        r.run(&Cmd::new("apk", &["add"]).with_args(packages.to_vec()).privileged().timeout_secs(1800))
+    async fn install(&self, r: &dyn Runner, packages: &[String]) -> Result<CmdOutput, PkgError> {
+        r.run(&Cmd::new("apk", &["add"]).with_args(packages.to_vec()).privileged().timeout_secs(1800)).await
     }
 }
 
@@ -108,18 +110,18 @@ mod tests {
         assert_eq!(r[1].name, "nginx-doc");
     }
 
-    #[test]
-    fn commands() {
+    #[tokio::test]
+    async fn commands() {
         let r = FakeRunner::new()
             .on("apk update", "")
             .on("apk upgrade", "")
             .on("apk add -u curl", "")
             .on("apk add git", "");
-        Apk.refresh(&r).unwrap();
-        Apk.install_updates(&r, &[], false).unwrap();
-        Apk.install_updates(&r, &["curl".into()], false).unwrap();
-        Apk.install(&r, &["git".into()]).unwrap();
-        assert!(matches!(Apk.install_updates(&r, &[], true), Err(PkgError::Unsupported(_))));
+        Apk.refresh(&r).await.unwrap();
+        Apk.install_updates(&r, &[], false).await.unwrap();
+        Apk.install_updates(&r, &["curl".into()], false).await.unwrap();
+        Apk.install(&r, &["git".into()]).await.unwrap();
+        assert!(matches!(Apk.install_updates(&r, &[], true).await, Err(PkgError::Unsupported(_))));
         assert_eq!(Apk.security_support(), SecuritySupport::Unavailable);
     }
 }
